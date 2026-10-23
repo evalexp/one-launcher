@@ -12,6 +12,8 @@ hide_on_blur = true
 clear_on_show = true
 # 最大展示的搜索条目数量
 max_results = 8
+# 插件检索防抖时间 (毫秒)，打字停顿设定时间后才触发插件检索，避免高频请求；系统应用搜索不受影响（0ms 即时响应）
+plugin_debounce_ms = 100
 
 [appearance]
 # 主题模式: "system" (跟随系统), "dark" (深色), "light" (浅色)

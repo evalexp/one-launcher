@@ -51,6 +51,8 @@ pub struct GeneralConfig {
     pub clear_on_show: bool,
     /// 启动器列表最大显示结果数
     pub max_results: usize,
+    /// 插件输入防抖间隔时间 (毫秒)，默认 100ms；仅对外部插件生效，核心应用搜索 0ms 即时响应
+    pub plugin_debounce_ms: u32,
 }
 
 impl Default for GeneralConfig {
@@ -60,6 +62,7 @@ impl Default for GeneralConfig {
             hide_on_blur: true,
             clear_on_show: true,
             max_results: 9,
+            plugin_debounce_ms: 100,
         }
     }
 }

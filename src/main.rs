@@ -2,7 +2,6 @@
 
 use one_launcher::config::ConfigManager;
 use one_launcher::indexer::AppIndexManager;
-use one_launcher::plugin::PluginManager;
 use one_launcher::single_instance::SingleInstance;
 use one_launcher::ui::run_launcher;
 use tracing::{error, info};
@@ -42,11 +41,8 @@ fn main() {
     // 2. 初始化应用索引管理器 (后台扫描开始菜单与系统应用)
     let app_indexer = AppIndexManager::new(&cfg.apps);
 
-    // 3. 初始化插件管理系统 (加载启用的 QuickJS 插件与原生动态库绑定)
-    let plugin_mgr = PluginManager::init(&cfg.plugins);
-
-    // 4. 运行原生无边框极速窗口
-    if let Err(err) = run_launcher(config_mgr, app_indexer, plugin_mgr) {
+    // 3. 运行原生无边框极速窗口 (插件系统由专属后台 Worker 线程驱动，UI 线程完全解耦)
+    if let Err(err) = run_launcher(config_mgr, app_indexer) {
         error!("运行时发生错误: {}", err);
     }
 }

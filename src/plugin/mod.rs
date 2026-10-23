@@ -24,10 +24,17 @@ pub struct LoadedPlugin {
 pub struct PluginManager {
     _rt: Runtime,
     ctx: Context,
-    plugins: Vec<LoadedPlugin>,
+    pub plugins: Vec<LoadedPlugin>,
 }
 
 impl PluginManager {
+    pub fn get_plugin_name(&self, plugin_id: &str) -> String {
+        self.plugins
+            .iter()
+            .find(|p| p.id == plugin_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| plugin_id.to_string())
+    }
     /// 扫描并初始化所有在配置文件中启用的插件
     pub fn init(configs: &HashMap<String, PluginConfig>) -> Self {
         let rt = Runtime::new().expect("初始化 QuickJS Runtime 失败");
@@ -103,21 +110,26 @@ impl PluginManager {
                     }
                 };
 
-                // 3. 构建该插件的合并配置 (以 metadata.default_config 为基底，用户 toml 配置覆盖)
+                // 3. 构建该插件的合并配置并在加载期单次实例化 JS Object（后续查询 0 内存分配）
+                let config_obj = Object::new(ctx.clone()).unwrap();
                 let mut merged_config = HashMap::new();
                 if let Some(def_cfg) = default_cfg_opt {
                     for key_res in def_cfg.keys::<String>() {
                         if let Ok(k) = key_res {
                             if let Ok(val) = def_cfg.get::<_, rquickjs::Value>(&k) {
                                 if let Some(i) = val.as_int() {
-                                    merged_config.insert(k, toml::Value::Integer(i as i64));
+                                    merged_config.insert(k.clone(), toml::Value::Integer(i as i64));
+                                    let _ = config_obj.set(k.as_str(), i);
                                 } else if let Some(b) = val.as_bool() {
-                                    merged_config.insert(k, toml::Value::Boolean(b));
+                                    merged_config.insert(k.clone(), toml::Value::Boolean(b));
+                                    let _ = config_obj.set(k.as_str(), b);
                                 } else if let Some(f) = val.as_float() {
-                                    merged_config.insert(k, toml::Value::Float(f));
+                                    merged_config.insert(k.clone(), toml::Value::Float(f));
+                                    let _ = config_obj.set(k.as_str(), f);
                                 } else if let Some(s) = val.as_string() {
                                     if let Ok(st) = s.to_string() {
-                                        merged_config.insert(k, toml::Value::String(st));
+                                        merged_config.insert(k.clone(), toml::Value::String(st.clone()));
+                                        let _ = config_obj.set(k.as_str(), st);
                                     }
                                 }
                             }
@@ -126,7 +138,15 @@ impl PluginManager {
                 }
                 for (k, v) in &cfg.config {
                     merged_config.insert(k.clone(), v.clone());
+                    match v {
+                        toml::Value::Integer(i) => { let _ = config_obj.set(k.as_str(), *i); }
+                        toml::Value::Boolean(b) => { let _ = config_obj.set(k.as_str(), *b); }
+                        toml::Value::Float(f) => { let _ = config_obj.set(k.as_str(), *f); }
+                        toml::Value::String(s) => { let _ = config_obj.set(k.as_str(), s.as_str()); }
+                        _ => {}
+                    }
                 }
+                let _ = ctx.globals().set(format!("__plugin_{}_config", plugin_id), config_obj);
 
                 // 4. 严格校验并常驻注册 on_query 与 on_select 函数 (不符合规范直接拒绝加载)
                 let query_fn: Function = module
@@ -190,23 +210,13 @@ impl PluginManager {
     /// 向指定插件发起用户输入查询 (on_query)
     pub fn query(&self, plugin_id: &str, input: &str) -> Vec<PluginResultItem> {
         self.ctx.with(|ctx| {
-            // 动态挂载该插件的专属配置到 launcher.config 和 global config
-            if let Some(plugin) = self.plugins.iter().find(|p| p.id == plugin_id) {
-                if let Ok(config_obj) = Object::new(ctx.clone()) {
-                    for (k, v) in &plugin.merged_config {
-                        match v {
-                            toml::Value::Integer(i) => { let _ = config_obj.set(k.as_str(), *i); }
-                            toml::Value::Boolean(b) => { let _ = config_obj.set(k.as_str(), *b); }
-                            toml::Value::Float(f) => { let _ = config_obj.set(k.as_str(), *f); }
-                            toml::Value::String(s) => { let _ = config_obj.set(k.as_str(), s.as_str()); }
-                            _ => {}
-                        }
-                    }
-                    if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
-                        let _ = launcher.set("config", config_obj.clone());
-                    }
-                    let _ = ctx.globals().set("config", config_obj);
+            // 复用加载期预先分配的静态配置对象引用，0 次 Object::new()，0 堆内存分配
+            let cfg_key = format!("__plugin_{}_config", plugin_id);
+            if let Ok(cfg_obj) = ctx.globals().get::<_, Object>(&cfg_key) {
+                if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
+                    let _ = launcher.set("config", cfg_obj.clone());
                 }
+                let _ = ctx.globals().set("config", cfg_obj);
             }
 
             let fn_name = format!("__plugin_{}_query", plugin_id);
@@ -258,23 +268,13 @@ impl PluginManager {
     /// 用户在列表中选中并确认某项条目时触发选择动作 (on_select)
     pub fn select(&self, plugin_id: &str, item_id: &str, payload: &str) {
         self.ctx.with(|ctx| {
-            // 动态挂载该插件专属配置
-            if let Some(plugin) = self.plugins.iter().find(|p| p.id == plugin_id) {
-                if let Ok(config_obj) = Object::new(ctx.clone()) {
-                    for (k, v) in &plugin.merged_config {
-                        match v {
-                            toml::Value::Integer(i) => { let _ = config_obj.set(k.as_str(), *i); }
-                            toml::Value::Boolean(b) => { let _ = config_obj.set(k.as_str(), *b); }
-                            toml::Value::Float(f) => { let _ = config_obj.set(k.as_str(), *f); }
-                            toml::Value::String(s) => { let _ = config_obj.set(k.as_str(), s.as_str()); }
-                            _ => {}
-                        }
-                    }
-                    if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
-                        let _ = launcher.set("config", config_obj.clone());
-                    }
-                    let _ = ctx.globals().set("config", config_obj);
+            // 复用预置配置引用
+            let cfg_key = format!("__plugin_{}_config", plugin_id);
+            if let Ok(cfg_obj) = ctx.globals().get::<_, Object>(&cfg_key) {
+                if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
+                    let _ = launcher.set("config", cfg_obj.clone());
                 }
+                let _ = ctx.globals().set("config", cfg_obj);
             }
 
             let fn_name = format!("__plugin_{}_select", plugin_id);

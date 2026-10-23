@@ -31,31 +31,75 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateCaret, CreateWindowExW, DefWindowProcW, DestroyCaret, DestroyWindow, DispatchMessageW,
     DrawIconEx, GetClientRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, IsWindowVisible,
-    LoadCursorW, PostQuitMessage, RegisterClassW, SetCaretPos, SetCursor, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowCaret, ShowWindow, TranslateMessage, DI_NORMAL,
-    GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_CHAR,
-    WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-    WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SetCaretPos, SetCursor,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowCaret, ShowWindow,
+    TranslateMessage, DI_NORMAL, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, MSG, SM_CXSCREEN,
+    SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
+    WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY,
+    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_SETFOCUS, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const WINDOW_CLASS_NAME: &str = "OneLauncher_MainWindow_Class";
 const INPUT_HEIGHT: i32 = 58;
 const ITEM_HEIGHT: i32 = 56;
 const FOOTER_HEIGHT: i32 = 28;
+const TIMER_PLUGIN_DEBOUNCE: usize = 1001;
+const WM_APP_PLUGIN_RESULTS: u32 = WM_USER + 101;
+
+pub enum PluginWorkerTask {
+    Query {
+        request_id: u64,
+        plugin_id: String,
+        input: String,
+    },
+    Select {
+        plugin_id: String,
+        item_id: String,
+        payload: String,
+    },
+    Reload {
+        configs: std::collections::HashMap<String, crate::config::PluginConfig>,
+    },
+}
+
+pub struct PluginWorkerResponse {
+    pub request_id: u64,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub items: Vec<crate::plugin::model::PluginResultItem>,
+}
 
 pub struct LauncherWindowState {
     hwnd: HWND,
     config_mgr: ConfigManager,
     app_indexer: AppIndexManager,
-    plugin_mgr: PluginManager,
+    plugin_prefixes: Vec<(String, String, String)>,
+    tx_worker: crossbeam_channel::Sender<PluginWorkerTask>,
+    rx_worker: crossbeam_channel::Receiver<PluginWorkerResponse>,
     tray: Option<TrayIcon>,
     query: String,
     results: Vec<SearchResultItem>,
     selected_index: usize,
     width: i32,
     caret_x: i32,
+    request_id: u64,
+    pending_plugin_id: String,
+    pending_plugin_name: String,
+    pending_query: String,
+}
+
+fn extract_plugin_prefixes(
+    configs: &std::collections::HashMap<String, crate::config::PluginConfig>,
+) -> Vec<(String, String, String)> {
+    let mut list = Vec::new();
+    for (id, cfg) in configs {
+        if cfg.enabled && !cfg.prefix.is_empty() {
+            list.push((id.clone(), cfg.name.clone(), cfg.prefix.clone()));
+        }
+    }
+    list.sort_by(|a, b| b.2.len().cmp(&a.2.len()));
+    list
 }
 
 impl LauncherWindowState {
@@ -63,7 +107,6 @@ impl LauncherWindowState {
         hwnd: HWND,
         config_mgr: ConfigManager,
         app_indexer: AppIndexManager,
-        plugin_mgr: PluginManager,
     ) -> Self {
         let cfg = config_mgr.get();
         let width = cfg.appearance.width.max(500) as i32;
@@ -76,17 +119,67 @@ impl LauncherWindowState {
             }
         };
 
+        let (tx_worker, rx_task) = crossbeam_channel::unbounded::<PluginWorkerTask>();
+        let (tx_res, rx_worker) = crossbeam_channel::unbounded::<PluginWorkerResponse>();
+
+        let plugin_prefixes = extract_plugin_prefixes(&cfg.plugins);
+        let worker_hwnd_val = hwnd.0 as isize;
+        let initial_configs = cfg.plugins.clone();
+
+        // 启动专属的后台插件 Worker 线程 (彻底解放 Win32 UI 线程，QuickJS 与 FFI 全程在后台运行)
+        std::thread::Builder::new()
+            .name("OneLauncher-PluginWorker".to_string())
+            .spawn(move || {
+                let mut p_mgr = PluginManager::init(&initial_configs);
+                while let Ok(task) = rx_task.recv() {
+                    match task {
+                        PluginWorkerTask::Query { request_id, plugin_id, input } => {
+                            let plugin_name = p_mgr.get_plugin_name(&plugin_id);
+                            let items = p_mgr.query(&plugin_id, &input);
+                            let _ = tx_res.send(PluginWorkerResponse {
+                                request_id,
+                                plugin_id,
+                                plugin_name,
+                                items,
+                            });
+                            unsafe {
+                                let target_hwnd = HWND(worker_hwnd_val as *mut _);
+                                let _ = PostMessageW(
+                                    target_hwnd,
+                                    WM_APP_PLUGIN_RESULTS,
+                                    windows::Win32::Foundation::WPARAM(request_id as usize),
+                                    windows::Win32::Foundation::LPARAM(0),
+                                );
+                            }
+                        }
+                        PluginWorkerTask::Select { plugin_id, item_id, payload } => {
+                            p_mgr.select(&plugin_id, &item_id, &payload);
+                        }
+                        PluginWorkerTask::Reload { configs } => {
+                            p_mgr = PluginManager::init(&configs);
+                        }
+                    }
+                }
+            })
+            .expect("创建插件后台 Worker 线程失败");
+
         let mut state = Self {
             hwnd,
             config_mgr,
             app_indexer,
-            plugin_mgr,
+            plugin_prefixes,
+            tx_worker,
+            rx_worker,
             tray,
             query: String::new(),
             results: Vec::new(),
             selected_index: 0,
             width,
             caret_x: 48,
+            request_id: 0,
+            pending_plugin_id: String::new(),
+            pending_plugin_name: String::new(),
+            pending_query: String::new(),
         };
         state.update_search();
         state
@@ -100,7 +193,10 @@ impl LauncherWindowState {
                     warn!("重新注册热键提示: {}", err);
                 }
                 self.app_indexer.reload(&new_cfg.apps);
-                self.plugin_mgr = PluginManager::init(&new_cfg.plugins);
+                self.plugin_prefixes = extract_plugin_prefixes(&new_cfg.plugins);
+                let _ = self.tx_worker.send(PluginWorkerTask::Reload {
+                    configs: new_cfg.plugins.clone(),
+                });
                 self.width = new_cfg.appearance.width.max(500) as i32;
                 self.update_search();
                 self.update_window_size();
@@ -115,7 +211,7 @@ impl LauncherWindowState {
         }
     }
 
-    /// 执行搜索与数据路由分发 (默认无输入不展示任何结果，按 prefix 独占路由，应用搜索免前缀)
+    /// 执行搜索与数据路由分发 (默认无输入不展示任何结果，按 prefix 独占路由，应用搜索免前缀且绝不防抖)
     pub fn update_search(&mut self) {
         let cfg = self.config_mgr.get();
         let max_results = cfg.general.max_results;
@@ -125,6 +221,9 @@ impl LauncherWindowState {
 
         // 默认不显示任何结果，只有在输入后才搜索显示结果
         if q.is_empty() {
+            unsafe {
+                let _ = KillTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE);
+            }
             self.results = items;
             self.selected_index = 0;
             self.update_window_size();
@@ -132,27 +231,49 @@ impl LauncherWindowState {
         }
 
         // 检查是否命中已注册的插件前缀 (严格 prefix 独占路由，绝不进行混合搜索)
-        if let Some((plugin, pure_query)) = self.plugin_mgr.match_prefix(&q) {
-            if !pure_query.is_empty() {
-                let p_results = self.plugin_mgr.query(&plugin.id, pure_query);
-                for p_item in p_results {
-                    items.push(SearchResultItem::from_plugin(&plugin.name, &plugin.id, p_item));
+        let mut matched_plugin = None;
+        for (p_id, p_name, p_prefix) in &self.plugin_prefixes {
+            if q.starts_with(p_prefix) {
+                let pure_query = q[p_prefix.len()..].trim().to_string();
+                matched_plugin = Some((p_id.clone(), p_name.clone(), pure_query));
+                break;
+            }
+        }
+
+        if let Some((plugin_id, plugin_name, pure_query)) = matched_plugin {
+            self.pending_plugin_id = plugin_id;
+            self.pending_plugin_name = plugin_name;
+            self.pending_query = pure_query;
+            self.request_id = self.request_id.wrapping_add(1);
+
+            let debounce_ms = cfg.general.plugin_debounce_ms;
+            unsafe {
+                let _ = KillTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE);
+                if debounce_ms > 0 {
+                    let _ = SetTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE, debounce_ms, None);
+                } else {
+                    let _ = self.tx_worker.send(PluginWorkerTask::Query {
+                        request_id: self.request_id,
+                        plugin_id: self.pending_plugin_id.clone(),
+                        input: self.pending_query.clone(),
+                    });
                 }
             }
         } else {
-            // 未匹配任何前缀，执行默认的系统核心应用搜索 (基于启动时维护的内存 Cache 毫秒级模糊匹配)
+            // 未匹配任何前缀，执行默认的系统核心应用搜索 (基于启动时维护的内存 Cache 毫秒级模糊匹配，0ms 绝不防抖！)
+            unsafe {
+                let _ = KillTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE);
+            }
             let matched_apps = self.app_indexer.search(&q, max_results);
             for app in matched_apps {
                 items.push(SearchResultItem::from_app(app));
             }
+            self.results = items;
+            if self.selected_index >= self.results.len() {
+                self.selected_index = 0;
+            }
+            self.update_window_size();
         }
-
-        self.results = items;
-        if self.selected_index >= self.results.len() {
-            self.selected_index = 0;
-        }
-
-        self.update_window_size();
     }
 
     /// 根据当前检索项数量动态调整窗口几何高度与屏幕居中
@@ -229,7 +350,11 @@ impl LauncherWindowState {
                 }
             }
             SearchResultKind::Plugin { plugin_id, item_id, payload } => {
-                self.plugin_mgr.select(plugin_id, item_id, payload);
+                let _ = self.tx_worker.send(PluginWorkerTask::Select {
+                    plugin_id: plugin_id.clone(),
+                    item_id: item_id.clone(),
+                    payload: payload.clone(),
+                });
             }
         }
 
@@ -455,6 +580,38 @@ unsafe extern "system" fn launcher_wndproc(
                         PostQuitMessage(0);
                     }
                     _ => {}
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == TIMER_PLUGIN_DEBOUNCE => {
+                let _ = KillTimer(hwnd, TIMER_PLUGIN_DEBOUNCE);
+                if !state.pending_query.is_empty() {
+                    let _ = state.tx_worker.send(PluginWorkerTask::Query {
+                        request_id: state.request_id,
+                        plugin_id: state.pending_plugin_id.clone(),
+                        input: state.pending_query.clone(),
+                    });
+                }
+                LRESULT(0)
+            }
+            WM_APP_PLUGIN_RESULTS => {
+                let mut updated = false;
+                while let Ok(res) = state.rx_worker.try_recv() {
+                    if res.request_id == state.request_id {
+                        let mut items = Vec::new();
+                        for p_item in res.items {
+                            items.push(SearchResultItem::from_plugin(&res.plugin_name, &res.plugin_id, p_item));
+                        }
+                        state.results = items;
+                        if state.selected_index >= state.results.len() {
+                            state.selected_index = 0;
+                        }
+                        state.update_window_size();
+                        updated = true;
+                    }
+                }
+                if updated {
+                    let _ = InvalidateRect(hwnd, None, false);
                 }
                 LRESULT(0)
             }
@@ -714,7 +871,6 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
 pub fn run_launcher(
     config_mgr: ConfigManager,
     app_indexer: AppIndexManager,
-    plugin_mgr: PluginManager,
 ) -> Result<(), String> {
     unsafe {
         let class_name_w = HSTRING::from(WINDOW_CLASS_NAME);
@@ -767,7 +923,6 @@ pub fn run_launcher(
             hwnd,
             config_mgr,
             app_indexer,
-            plugin_mgr,
         ));
 
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
