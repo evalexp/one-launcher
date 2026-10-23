@@ -26,6 +26,9 @@ pub struct TrayIcon {
     custom_icon: Option<HICON>,
 }
 
+unsafe impl Send for TrayIcon {}
+unsafe impl Sync for TrayIcon {}
+
 impl TrayIcon {
     /// 创建并添加系统托盘图标 (基于 OneLauncher "Unified Lens & One" 极简现代高审美设计)
     pub fn create(hwnd: HWND) -> Result<Self, String> {
@@ -51,15 +54,25 @@ impl TrayIcon {
             // 悬停提示文字 "OneLauncher (Alt+Space 唤出)"
             let tip = "OneLauncher (Alt+Space 唤出)";
             let tip_utf16: Vec<u16> = tip.encode_utf16().chain(std::iter::once(0)).collect();
-            let copy_len = tip_utf16.len().min(nid.szTip.len());
+            let copy_len = tip_utf16.len().min(nid.szTip.len() - 1);
             nid.szTip[..copy_len].copy_from_slice(&tip_utf16[..copy_len]);
 
-            let res = Shell_NotifyIconW(NIM_ADD, &nid);
-            if !res.as_bool() {
+            // 系统托盘注册重试机制 (应对 Explorer 准备阶段或高 DPI 初始化抖动)
+            let mut added = false;
+            for _ in 0..5 {
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+                if Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+                    added = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+
+            if !added {
                 if is_custom {
                     let _ = DestroyIcon(hicon);
                 }
-                return Err("向系统通知区域注册托盘图标失败".to_string());
+                return Err("向系统通知区域注册托盘图标失败 (Shell_NotifyIconW NIM_ADD 拒绝)".to_string());
             }
 
             info!("系统托盘专属 OneLauncher 极简透镜图标已成功注册");
@@ -164,8 +177,15 @@ impl TrayIcon {
             SelectObject(mem_dc, old_pen);
             let _ = DeleteObject(SelectObject(mem_dc, old_brush));
 
-            // 准备透明掩码
-            let mask_bmp = CreateBitmap(size, size, 1, 1, None);
+            // 准备透明掩码 (全 0 初始化，表示透明度由颜色缓冲主导)
+            let mask_bits = vec![0u8; ((size * size) / 8) as usize];
+            let mask_bmp = CreateBitmap(
+                size,
+                size,
+                1,
+                1,
+                Some(mask_bits.as_ptr() as *const _),
+            );
 
             SelectObject(mem_dc, old_bmp);
             let _ = DeleteDC(mem_dc);

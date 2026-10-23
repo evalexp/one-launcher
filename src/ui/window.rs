@@ -13,29 +13,34 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::OnceLock;
-use tracing::{error, info, warn};
-use windows::core::{w, PCWSTR};
+use tracing::{info, warn};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, PostQuitMessage, RegisterClassW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, TranslateMessage, GWL_EXSTYLE,
-    HWND_MESSAGE, HWND_TOPMOST, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, WA_INACTIVE, WM_ACTIVATE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
-    WM_HOTKEY, WM_RBUTTONUP, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    AllowSetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, PostQuitMessage,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    WA_INACTIVE, WM_ACTIVATE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY,
+    WM_RBUTTONUP, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
 slint::include_modules!();
 
 const SLINT_SUBCLASS_ID: usize = 0x4001;
 static SLINT_WINDOW_WEAK: OnceLock<Mutex<Option<Weak<AppWindow>>>> = OnceLock::new();
-static MSG_HWND_CONTAINER: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
+static TRAY_INSTANCE: OnceLock<Mutex<Option<TrayIcon>>> = OnceLock::new();
+static APP_STATE: OnceLock<Mutex<Option<AppState>>> = OnceLock::new();
+
+struct AppState {
+    config_mgr: ConfigManager,
+    app_indexer: AppIndexManager,
+    #[allow(dead_code)]
+    slint_hwnd: isize,
+}
 
 #[derive(Clone, Debug)]
 enum LaunchTarget {
@@ -43,7 +48,7 @@ enum LaunchTarget {
     File(PathBuf),
 }
 
-/// 拦截 Slint 主窗口的 Win32 消息，监听失去焦点 (WM_ACTIVATE -> WA_INACTIVE) 并自动隐藏
+/// 拦截 Slint 窗口过程：管理全局热键、托盘菜单、失焦隐藏与托盘指令
 unsafe extern "system" fn slint_wnd_subclass_proc(
     hwnd: HWND,
     msg: u32,
@@ -52,10 +57,69 @@ unsafe extern "system" fn slint_wnd_subclass_proc(
     _uid: usize,
     _data: usize,
 ) -> LRESULT {
-    if msg == WM_ACTIVATE {
-        let state = (wparam.0 & 0xFFFF) as u32;
-        if state == WA_INACTIVE {
-            let _ = slint::invoke_from_event_loop(move || {
+    match msg {
+        WM_HOTKEY => {
+            unsafe {
+                let _ = AllowSetForegroundWindow(std::process::id());
+            }
+            toggle_launcher_window();
+            LRESULT(0)
+        }
+        WM_TRAYICON => {
+            let event = (lparam.0 & 0xFFFF) as u32;
+            if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
+                if let Some(lock) = TRAY_INSTANCE.get() {
+                    if let Some(tray) = lock.lock().as_ref() {
+                        tray.show_context_menu();
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            let cmd_id = (wparam.0 & 0xFFFF) as usize;
+            match cmd_id {
+                ID_TRAY_EDIT_CONFIG => {
+                    if let Some(lock) = APP_STATE.get() {
+                        if let Some(state) = lock.lock().as_ref() {
+                            if let Err(e) = state.config_mgr.open_in_editor() {
+                                warn!("打开配置文件失败: {}", e);
+                            }
+                        }
+                    }
+                }
+                ID_TRAY_RELOAD_CONFIG => {
+                    if let Some(lock) = APP_STATE.get() {
+                        if let Some(state) = lock.lock().as_mut() {
+                            match state.config_mgr.reload() {
+                                Ok(new_cfg) => {
+                                    if let Err(e) = register_global_hotkey(hwnd, &new_cfg.general.hotkey) {
+                                        warn!("重载热键提示: {}", e);
+                                    }
+                                    state.app_indexer.reload(&new_cfg.apps);
+                                    info!("OneLauncher 配置与热键已成功重载生效！");
+                                    let app_indexer = state.app_indexer.clone();
+                                    refresh_initial_apps(&app_indexer);
+                                }
+                                Err(e) => warn!("重载配置失败: {}", e),
+                            }
+                        }
+                    }
+                }
+                ID_TRAY_EXIT => {
+                    info!("正在退出 OneLauncher...");
+                    let _ = slint::quit_event_loop();
+                    unsafe {
+                        PostQuitMessage(0);
+                    }
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_ACTIVATE => {
+            let state = (wparam.0 & 0xFFFF) as u32;
+            if state == WA_INACTIVE {
                 if let Some(lock) = SLINT_WINDOW_WEAK.get() {
                     if let Some(weak) = lock.lock().as_ref() {
                         if let Some(win) = weak.upgrade() {
@@ -65,107 +129,15 @@ unsafe extern "system" fn slint_wnd_subclass_proc(
                         }
                     }
                 }
-            });
-        }
-    }
-    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
-}
-
-/// 后台消息专用窗口的 WndProc（管理系统托盘与全局热键）
-unsafe extern "system" fn msg_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_HOTKEY => {
-            unsafe {
-                let _ = AllowSetForegroundWindow(std::process::id());
             }
-            let _ = slint::invoke_from_event_loop(move || {
-                toggle_launcher_window();
-            });
-            LRESULT(0)
-        }
-        WM_TRAYICON => {
-            let event = (lparam.0 & 0xFFFF) as u32;
-            if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
-                // 托盘右键菜单
-                unsafe {
-                    let state_ptr = GetWindowLongPtrW(
-                        hwnd,
-                        windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
-                    ) as *mut TrayContext;
-                    if !state_ptr.is_null() {
-                        let ctx = &*state_ptr;
-                        if let Some(tray) = &ctx.tray {
-                            tray.show_context_menu();
-                        }
-                    }
-                }
-            }
-            LRESULT(0)
-        }
-        WM_COMMAND => {
-            let cmd_id = (wparam.0 & 0xFFFF) as usize;
-            unsafe {
-                let state_ptr = GetWindowLongPtrW(
-                    hwnd,
-                    windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
-                ) as *mut TrayContext;
-
-                if !state_ptr.is_null() {
-                    let ctx = &mut *state_ptr;
-                    match cmd_id {
-                        ID_TRAY_EDIT_CONFIG => {
-                            if let Err(e) = ctx.config_mgr.open_in_editor() {
-                                warn!("打开配置文件失败: {}", e);
-                            }
-                        }
-                        ID_TRAY_RELOAD_CONFIG => {
-                            match ctx.config_mgr.reload() {
-                                Ok(new_cfg) => {
-                                    if let Err(e) = register_global_hotkey(hwnd, &new_cfg.general.hotkey) {
-                                        warn!("重载热键提示: {}", e);
-                                    }
-                                    ctx.app_indexer.reload(&new_cfg.apps);
-                                    info!("OneLauncher 配置与热键已成功重载生效！");
-                                    // 刷新 UI 中的结果
-                                    let app_indexer = ctx.app_indexer.clone();
-                                    let _ = slint::invoke_from_event_loop(move || {
-                                        refresh_initial_apps(&app_indexer);
-                                    });
-                                }
-                                Err(e) => warn!("重载配置失败: {}", e),
-                            }
-                        }
-                        ID_TRAY_EXIT => {
-                            info!("正在退出 OneLauncher...");
-                            let _ = slint::quit_event_loop();
-                            PostQuitMessage(0);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            LRESULT(0)
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
             unregister_global_hotkey(hwnd);
-            unsafe {
-                PostQuitMessage(0);
-            }
-            LRESULT(0)
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
     }
-}
-
-struct TrayContext {
-    config_mgr: ConfigManager,
-    app_indexer: AppIndexManager,
-    tray: Option<TrayIcon>,
 }
 
 /// 切换启动器主窗口显示状态
@@ -177,7 +149,6 @@ fn toggle_launcher_window() {
                     let _ = win.hide();
                 } else {
                     let _ = win.show();
-                    // 居中并置顶
                     let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
                     let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
                     let win_w = 720;
@@ -252,135 +223,6 @@ pub fn run_launcher(
         .get_or_init(|| Mutex::new(None))
         .lock()
         .replace(window_weak.clone());
-
-    // 获取 Slint 原生 Win32 HWND 句柄
-    let slint_handle = window.window().window_handle();
-    let raw_handle = slint_handle.window_handle()?.as_raw();
-    let slint_hwnd = match raw_handle {
-        RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as _),
-        _ => return Err("未能获取 Win32 窗口句柄".into()),
-    };
-
-    // 设置初始几何属性与屏幕垂直 22% 黄金分割居中
-    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let win_w = cfg.appearance.width.max(500) as i32;
-    let x = (screen_w - win_w) / 2;
-    let y = (screen_h as f32 * 0.22) as i32;
-    window.set_window_width(win_w);
-    window.window().set_position(slint::PhysicalPosition::new(x, y));
-
-    // 配置无边框圆角、置顶并移除任务栏图标 (WS_EX_TOOLWINDOW)
-    unsafe {
-        let ex_style = GetWindowLongPtrW(slint_hwnd, GWL_EXSTYLE);
-        let _ = SetWindowLongPtrW(
-            slint_hwnd,
-            GWL_EXSTYLE,
-            (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
-        );
-        let _ = SetWindowPos(
-            slint_hwnd,
-            HWND_TOPMOST,
-            x,
-            y,
-            win_w,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE,
-        );
-        let corner = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(
-            slint_hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &corner as *const _ as *const _,
-            std::mem::size_of_val(&corner) as u32,
-        );
-
-        // 安装窗口子类过程，捕获 WA_INACTIVE 失去焦点时自动隐藏
-        let _ = SetWindowSubclass(
-            slint_hwnd,
-            Some(slint_wnd_subclass_proc),
-            SLINT_SUBCLASS_ID,
-            0,
-        );
-    }
-
-    // 后台独立线程创建用于托盘和全局热键的无干扰消息窗口
-    let config_mgr_clone = config_mgr.clone();
-    let app_indexer_clone = app_indexer.clone();
-    let hotkey_str = cfg.general.hotkey.clone();
-
-    std::thread::spawn(move || unsafe {
-        let class_name = w!("OneLauncher_Tray_Msg_Class");
-        let hinstance = GetModuleHandleW(None).unwrap_or_default();
-
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(msg_wnd_proc),
-            hInstance: hinstance.into(),
-            lpszClassName: PCWSTR(class_name.as_ptr()),
-            ..Default::default()
-        };
-        let _ = RegisterClassW(&wc);
-
-        let msg_hwnd_res = CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            class_name,
-            w!("OneLauncher_Tray_Msg_Window"),
-            windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(0),
-            0,
-            0,
-            0,
-            0,
-            HWND_MESSAGE,
-            None,
-            hinstance,
-            None,
-        );
-
-        let msg_hwnd = match msg_hwnd_res {
-            Ok(h) => h,
-            Err(e) => {
-                error!("创建后台托盘消息窗口失败: {}", e);
-                return;
-            }
-        };
-
-        MSG_HWND_CONTAINER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .replace(msg_hwnd.0 as isize);
-
-        // 初始化系统托盘图标
-        let tray = match TrayIcon::create(msg_hwnd) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                warn!("未能创建托盘图标: {}", e);
-                None
-            }
-        };
-
-        // 注册全局热键
-        if let Err(e) = register_global_hotkey(msg_hwnd, &hotkey_str) {
-            warn!("注册全局呼出热键 '{}' 提示: {}", hotkey_str, e);
-        }
-
-        let ctx = Box::new(TrayContext {
-            config_mgr: config_mgr_clone,
-            app_indexer: app_indexer_clone,
-            tray,
-        });
-
-        SetWindowLongPtrW(
-            msg_hwnd,
-            windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
-            Box::into_raw(ctx) as isize,
-        );
-
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    });
 
     // 当前检索条目的启动目标映射
     let current_targets: Rc<RefCell<Vec<LaunchTarget>>> = Rc::new(RefCell::new(Vec::new()));
@@ -527,21 +369,100 @@ pub fn run_launcher(
 
     info!("OneLauncher 现代化界面已成功就绪，等待热键唤出。");
 
-    // 初始显示一次并自动隐藏（让 Slint / Winit 完成 Win32 消息循环挂载）
-    let _ = window.show();
-    let _ = window.hide();
+    // 先指示 Slint 在事件循环启动时呈现窗口以完成底层 HWND 映射
+    window.show()?;
 
-    // 运行 Slint 事件循环直到退出
-    slint::run_event_loop()?;
+    let window_weak_init = window.as_weak();
+    let config_mgr_init = config_mgr.clone();
+    let app_indexer_init = app_indexer.clone();
 
-    // 退出时销毁后台托盘窗口
-    if let Some(lock) = MSG_HWND_CONTAINER.get() {
-        if let Some(msg_hwnd_val) = *lock.lock() {
-            unsafe {
-                let _ = DestroyWindow(HWND(msg_hwnd_val as *mut _));
+    slint::invoke_from_event_loop(move || {
+        if let Some(win) = window_weak_init.upgrade() {
+            if let Ok(handle) = win.window().window_handle().window_handle() {
+                if let RawWindowHandle::Win32(wh) = handle.as_raw() {
+                    let slint_hwnd = HWND(wh.hwnd.get() as _);
+                    info!("事件循环中成功获取 Win32 HWND: {:?}", slint_hwnd);
+
+                    // 1. 设置屏幕垂直 22% 黄金分割居中与置顶
+                    let cfg = config_mgr_init.get();
+                    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+                    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+                    let win_w = cfg.appearance.width.max(500) as i32;
+                    let x = (screen_w - win_w) / 2;
+                    let y = (screen_h as f32 * 0.22) as i32;
+                    win.set_window_width(win_w);
+                    win.window().set_position(slint::PhysicalPosition::new(x, y));
+
+                    // 2. 配置无边框圆角、置顶并移除任务栏图标 (WS_EX_TOOLWINDOW)
+                    unsafe {
+                        let ex_style = GetWindowLongPtrW(slint_hwnd, GWL_EXSTYLE);
+                        let _ = SetWindowLongPtrW(
+                            slint_hwnd,
+                            GWL_EXSTYLE,
+                            (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
+                        );
+                        let _ = SetWindowPos(
+                            slint_hwnd,
+                            HWND_TOPMOST,
+                            x,
+                            y,
+                            win_w,
+                            0,
+                            SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                        let corner = DWMWCP_ROUND;
+                        let _ = DwmSetWindowAttribute(
+                            slint_hwnd,
+                            DWMWA_WINDOW_CORNER_PREFERENCE,
+                            &corner as *const _ as *const _,
+                            std::mem::size_of_val(&corner) as u32,
+                        );
+
+                        // 3. 挂载窗口子类过程（拦截热键、托盘、失焦）
+                        let _ = SetWindowSubclass(
+                            slint_hwnd,
+                            Some(slint_wnd_subclass_proc),
+                            SLINT_SUBCLASS_ID,
+                            0,
+                        );
+                    }
+
+                    // 4. 注册全局热键与系统托盘图标
+                    if let Err(e) = register_global_hotkey(slint_hwnd, &cfg.general.hotkey) {
+                        warn!("注册全局呼出热键 '{}' 提示: {}", cfg.general.hotkey, e);
+                    }
+
+                    match TrayIcon::create(slint_hwnd) {
+                        Ok(tray) => {
+                            info!("成功向系统通知区域注册托盘图标");
+                            TRAY_INSTANCE
+                                .get_or_init(|| Mutex::new(None))
+                                .lock()
+                                .replace(tray);
+                        }
+                        Err(e) => warn!("未能创建托盘图标: {}", e),
+                    }
+
+                    // 5. 保存状态供托盘回调使用
+                    APP_STATE
+                        .get_or_init(|| Mutex::new(None))
+                        .lock()
+                        .replace(AppState {
+                            config_mgr: config_mgr_init,
+                            app_indexer: app_indexer_init,
+                            slint_hwnd: slint_hwnd.0 as isize,
+                        });
+                }
             }
+
+            // 6. 初始隐藏，进入待命状态
+            let _ = win.hide();
+            info!("OneLauncher 窗口已隐藏并进入后台守护监听状态。");
         }
-    }
+    })?;
+
+    // 运行 Slint 后台守护事件循环，直到托盘菜单触发退出
+    slint::run_event_loop_until_quit()?;
 
     info!("OneLauncher 进程已安全优雅退出。");
     Ok(())
