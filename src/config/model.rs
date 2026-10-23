@@ -106,12 +106,10 @@ impl Default for AppsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EverythingConfig {
-    /// 是否开启 Everything 原生 IPC 联动
+    /// 是否开启 Everything 原生 SDK/IPC 联动
     pub enabled: bool,
-    /// 专用触发前缀；留空 "" 表示混合搜索，若填 "f " 或 "e:" 则输入该前缀时激活专属搜索
+    /// 专用触发前缀；默认 "fs:" 表明是一次文件搜索动作；若留空 "" 则为混合搜索
     pub prefix: String,
-    /// Everything 实例名称 (空字符串 "" 为默认实例，若使用多开实例可指定如 "1.5a")
-    pub instance_name: String,
     /// Everything 返回结果的最大数量上限
     pub max_results: usize,
 }
@@ -120,8 +118,7 @@ impl Default for EverythingConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            prefix: "".to_string(),
-            instance_name: "".to_string(),
+            prefix: "fs:".to_string(),
             max_results: 20,
         }
     }

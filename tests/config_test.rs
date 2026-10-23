@@ -13,6 +13,7 @@ fn test_default_config_template_is_valid() {
     assert_eq!(config.appearance.backdrop_effect, "mica");
     assert!(config.apps.scan_uwp);
     assert!(config.everything.enabled);
+    assert_eq!(config.everything.prefix, "fs:");
 }
 
 #[test]
