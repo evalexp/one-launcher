@@ -19,6 +19,10 @@ notify-debouncer-mini = "0.4"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 
+# 拼音与模糊匹配
+pinyin = "0.10"
+fuzzy-matcher = "0.3"
+
 # 日志与跟踪
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -29,6 +33,8 @@ version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_Security",
     "Win32_System_Threading",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
@@ -36,3 +42,10 @@ features = [
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
 ]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

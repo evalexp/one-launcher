@@ -2,7 +2,7 @@ pub mod model;
 pub mod template;
 pub mod watcher;
 
-pub use model::AppConfig;
+pub use model::{AppearanceConfig, AppConfig, AppsConfig, EverythingConfig, GeneralConfig};
 pub use watcher::ConfigWatcher;
 
 use parking_lot::RwLock;

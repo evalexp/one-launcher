@@ -46,6 +46,7 @@ pub struct EverythingSdk {
     is_folder_result: FnIsFolderResult,
     get_last_error: FnGetLastError,
     clean_up: FnCleanUp,
+    #[allow(dead_code)]
     is_db_loaded: Option<FnIsDbLoaded>,
     query_lock: Mutex<()>,
 }
