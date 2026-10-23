@@ -2,8 +2,8 @@ use tracing::{error, info};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-    DeleteObject, Ellipse, FillRect, Polygon, SelectObject,
+    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
+    DeleteDC, DeleteObject, Ellipse, FillRect, Polygon, PS_SOLID, SelectObject,
 };
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
@@ -27,11 +27,10 @@ pub struct TrayIcon {
 }
 
 impl TrayIcon {
-    /// 创建并添加系统托盘图标（斜向 45 度低饱和质感小火箭）
+    /// 创建并添加系统托盘图标 (基于 OneLauncher "Unified Lens & One" 极简现代高审美设计)
     pub fn create(hwnd: HWND) -> Result<Self, String> {
         unsafe {
-            // 优先使用动态生成的斜向 45 度专属小火箭图标
-            let (hicon, is_custom) = match Self::create_rocket_icon() {
+            let (hicon, is_custom) = match Self::create_unified_one_icon() {
                 Ok(icon) => (icon, true),
                 Err(e) => {
                     info!("回退使用系统默认图标: {}", e);
@@ -63,7 +62,7 @@ impl TrayIcon {
                 return Err("向系统通知区域注册托盘图标失败".to_string());
             }
 
-            info!("系统托盘 45° 雅致小火箭图标已成功注册");
+            info!("系统托盘专属 OneLauncher 极简透镜图标已成功注册");
             Ok(Self {
                 nid,
                 custom_icon: if is_custom { Some(hicon) } else { None },
@@ -94,7 +93,6 @@ impl TrayIcon {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
 
-            // 必须先调用 SetForegroundWindow，否则点击菜单外部时菜单不会自动消失 (Win32 经典特性)
             let _ = SetForegroundWindow(self.nid.hWnd);
 
             let _ = TrackPopupMenu(
@@ -111,8 +109,9 @@ impl TrayIcon {
         }
     }
 
-    /// 在内存中纯代码自绘 32x32 像素、斜向 45 度（头朝左上方 ↖）的低饱和质感小火箭
-    unsafe fn create_rocket_icon() -> Result<HICON, String> {
+    /// 在内存中纯代码自绘 32x32 专属 "One" 聚光透镜几何图标
+    /// 设计内涵: 外部圆环象征聚光搜索透镜 (Aperture Lens)，中心核心立体数字 "1" 象征统一一触即达 (The Unified One)
+    unsafe fn create_unified_one_icon() -> Result<HICON, String> {
         let size = 32i32;
 
         unsafe {
@@ -127,65 +126,42 @@ impl TrayIcon {
             FillRect(mem_dc, &full_rect, bg_brush);
             let _ = DeleteObject(bg_brush);
 
-            // 1. 绘制右下方推进火焰 (45° 尾喷：从机尾 21,21 向右下 28,28，低饱和暖黄与浅橙)
-            let flame_brush = CreateSolidBrush(COLORREF(0x004BA2F5)); // 柔和橙 (RGB: 245, 162, 75)
-            let old_brush = SelectObject(mem_dc, flame_brush);
-            let flame_pts = [
-                POINT { x: 19, y: 22 },
-                POINT { x: 28, y: 28 }, // 火焰尖端朝向右下方
-                POINT { x: 22, y: 19 },
-            ];
-            let _ = Polygon(mem_dc, &flame_pts);
-            let _ = DeleteObject(SelectObject(mem_dc, old_brush));
+            // 1. 绘制外部聚焦透镜圆环 (低饱和深空灰白微光 #94A3B8, 2px 宽)
+            let ring_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00B8A394));
+            let old_pen = SelectObject(mem_dc, ring_pen);
+            let null_brush = windows::Win32::Graphics::Gdi::GetStockObject(windows::Win32::Graphics::Gdi::NULL_BRUSH);
+            let old_brush = SelectObject(mem_dc, null_brush);
 
-            // 2. 绘制双侧机翼 (低饱和冷灰蓝 #64748B)
-            let wing_brush = CreateSolidBrush(COLORREF(0x008B7464)); // (RGB: 100, 116, 139)
-            let old_brush = SelectObject(mem_dc, wing_brush);
-            // 左翼 (下翼)
-            let wing_left = [
-                POINT { x: 12, y: 18 },
-                POINT { x: 8,  y: 25 },
-                POINT { x: 17, y: 22 },
-            ];
-            let _ = Polygon(mem_dc, &wing_left);
+            let _ = Ellipse(mem_dc, 3, 3, 29, 29);
 
-            // 右翼 (上翼)
-            let wing_right = [
-                POINT { x: 18, y: 12 },
-                POINT { x: 25, y: 8 },
-                POINT { x: 22, y: 17 },
-            ];
-            let _ = Polygon(mem_dc, &wing_right);
-            let _ = DeleteObject(SelectObject(mem_dc, old_brush));
+            SelectObject(mem_dc, old_brush);
+            let _ = DeleteObject(SelectObject(mem_dc, old_pen));
 
-            // 3. 绘制 45° 倾斜火箭主体 (柔和银白色 #E2E8F0，尖端朝左上 6,6)
-            let body_brush = CreateSolidBrush(COLORREF(0x00F0E8E2)); // 雅致银白
-            let old_brush = SelectObject(mem_dc, body_brush);
-            let body_pts = [
-                POINT { x: 6,  y: 6 },  // 火箭机头尖端 (左上方)
-                POINT { x: 8,  y: 15 },
-                POINT { x: 20, y: 22 }, // 机尾
-                POINT { x: 22, y: 20 },
-                POINT { x: 15, y: 8 },
-            ];
-            let _ = Polygon(mem_dc, &body_pts);
-            let _ = DeleteObject(SelectObject(mem_dc, old_brush));
+            // 2. 绘制核心 "1" (The One: 纯净冰魄银白 #F8FAFC)
+            let one_brush = CreateSolidBrush(COLORREF(0x00FCFAF8));
+            let old_brush = SelectObject(mem_dc, one_brush);
+            let null_pen = windows::Win32::Graphics::Gdi::GetStockObject(windows::Win32::Graphics::Gdi::NULL_PEN);
+            let old_pen = SelectObject(mem_dc, null_pen);
 
-            // 4. 绘制机头部尖锥柔和点缀 (低饱和哑光红 #BE5046)
-            let nose_brush = CreateSolidBrush(COLORREF(0x004650BE)); // (RGB: 190, 80, 70)
-            let old_brush = SelectObject(mem_dc, nose_brush);
-            let nose_pts = [
-                POINT { x: 6,  y: 6 },
-                POINT { x: 8,  y: 11 },
-                POINT { x: 11, y: 8 },
+            // 几何 "1" 的利落切角与立柱点阵
+            let one_pts = [
+                POINT { x: 13, y: 13 }, // 45° 切角起始
+                POINT { x: 17, y: 9 },
+                POINT { x: 19, y: 9 },
+                POINT { x: 19, y: 23 }, // 垂直立柱右缘
+                POINT { x: 16, y: 23 },
+                POINT { x: 16, y: 13 },
+                POINT { x: 13, y: 15 },
             ];
-            let _ = Polygon(mem_dc, &nose_pts);
-            let _ = DeleteObject(SelectObject(mem_dc, old_brush));
+            let _ = Polygon(mem_dc, &one_pts);
 
-            // 5. 绘制圆形舷窗 (微缩冷灰圆窗)
-            let window_brush = CreateSolidBrush(COLORREF(0x00A09080)); // 柔和灰青
-            let old_brush = SelectObject(mem_dc, window_brush);
-            let _ = Ellipse(mem_dc, 12, 12, 16, 16);
+            // 3. 右上角极速点芒 (Launch Spark: 冰晶天青色 #38BDF8)
+            let spark_brush = CreateSolidBrush(COLORREF(0x00F8BD38));
+            SelectObject(mem_dc, spark_brush);
+            let _ = Ellipse(mem_dc, 22, 6, 26, 10);
+            let _ = DeleteObject(spark_brush);
+
+            SelectObject(mem_dc, old_pen);
             let _ = DeleteObject(SelectObject(mem_dc, old_brush));
 
             // 准备透明掩码
@@ -213,7 +189,7 @@ impl TrayIcon {
                 }
             }
 
-            Err("CreateIconIndirect 创建 45° 小火箭图标失败".to_string())
+            Err("CreateIconIndirect 创建 OneLauncher 专属图标失败".to_string())
         }
     }
 }

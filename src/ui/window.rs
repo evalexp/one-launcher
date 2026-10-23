@@ -8,30 +8,40 @@ use crate::tray::{
 use crate::ui::types::{SearchResultItem, SearchResultKind};
 use tracing::{info, warn};
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect, SelectObject, SetBkMode,
-    SetTextColor, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, PAINTSTRUCT,
-    SRCCOPY, TRANSPARENT,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetTextExtentPoint32W, InvalidateRect,
+    SelectObject, SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+    DT_VCENTER, HBITMAP, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VIRTUAL_KEY, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP,
+    GetKeyState, SetActiveWindow, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_DELETE,
+    VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetSystemMetrics, GetWindowLongPtrW, IsWindowVisible, PostQuitMessage, RegisterClassW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA,
-    HWND_TOPMOST, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, WA_INACTIVE,
-    WM_ACTIVATE, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    BringWindowToTop, CreateCaret, CreateWindowExW, DefWindowProcW, DestroyCaret, DestroyWindow,
+    DispatchMessageW, GetClientRect, GetForegroundWindow, GetMessageW, GetSystemMetrics,
+    GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, PostQuitMessage, RegisterClassW,
+    SetCaretPos, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowCaret, ShowWindow,
+    GWLP_USERDATA, HWND_TOPMOST, MA_ACTIVATE, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_SHOWWINDOW,
+    SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT,
+    WM_RBUTTONUP, WM_SETFOCUS, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn AttachThreadInput(idattach: u32, idattachto: u32, fattach: windows::Win32::Foundation::BOOL) -> windows::Win32::Foundation::BOOL;
+}
 
 const WINDOW_CLASS_NAME: &str = "OneLauncher_MainWindow_Class";
 const INPUT_HEIGHT: i32 = 56;
 const ITEM_HEIGHT: i32 = 50;
+const CARET_HEIGHT: i32 = 24;
 
 pub struct LauncherWindowState {
     hwnd: HWND,
@@ -43,6 +53,7 @@ pub struct LauncherWindowState {
     results: Vec<SearchResultItem>,
     selected_index: usize,
     width: i32,
+    caret_x: i32,
 }
 
 impl LauncherWindowState {
@@ -73,6 +84,7 @@ impl LauncherWindowState {
             results: Vec::new(),
             selected_index: 0,
             width,
+            caret_x: 20,
         };
         state.update_search();
         state
@@ -82,18 +94,12 @@ impl LauncherWindowState {
     pub fn reload_config(&mut self) {
         match self.config_mgr.reload() {
             Ok(new_cfg) => {
-                // 1. 重新注册全局热键（移除旧热键绑定并注册新键位）
                 if let Err(err) = register_global_hotkey(self.hwnd, &new_cfg.general.hotkey) {
                     warn!("重新注册热键提示: {}", err);
                 }
-
-                // 2. 重新扫描系统应用程序目录
                 self.app_indexer.reload(&new_cfg.apps);
-
-                // 3. 更新界面参数
                 self.width = new_cfg.appearance.width as i32;
                 self.update_search();
-
                 unsafe {
                     let _ = InvalidateRect(self.hwnd, None, false);
                 }
@@ -113,7 +119,6 @@ impl LauncherWindowState {
 
         let mut items = Vec::new();
 
-        // 检查是否命中 Everything 专属前缀 (默认 "fs:")
         let prefix = &cfg.everything.prefix;
         let is_everything_prefix = !prefix.is_empty() && q.starts_with(prefix);
 
@@ -127,13 +132,11 @@ impl LauncherWindowState {
                 }
             }
         } else {
-            // 普通系统应用程序模糊检索
             let matched_apps = self.app_indexer.search(&q, max_results);
             for app in matched_apps {
                 items.push(SearchResultItem::from_app(app));
             }
 
-            // 若 Everything 开启且处于混合模式 (prefix 为空)
             if cfg.everything.enabled && prefix.is_empty() && !q.is_empty() {
                 let remaining = max_results.saturating_sub(items.len());
                 if remaining > 0 {
@@ -151,7 +154,36 @@ impl LauncherWindowState {
             self.selected_index = 0;
         }
 
+        self.update_caret_position();
         self.resize_window();
+    }
+
+    /// 更新输入光标位置并协助 IME 输入法精准跟随
+    pub fn update_caret_position(&mut self) {
+        unsafe {
+            let hdc = windows::Win32::Graphics::Gdi::GetDC(self.hwnd);
+            let font = CreateFontW(
+                22, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 2, 0,
+                PCWSTR(HSTRING::from("Segoe UI").as_ptr()),
+            );
+            let old_font = SelectObject(hdc, font);
+
+            let mut size = SIZE::default();
+            if self.query.is_empty() {
+                self.caret_x = 20;
+            } else {
+                let text_utf16: Vec<u16> = self.query.encode_utf16().collect();
+                let _ = GetTextExtentPoint32W(hdc, &text_utf16, &mut size);
+                self.caret_x = (20 + size.cx).min(self.width - 24);
+            }
+
+            SelectObject(hdc, old_font);
+            let _ = DeleteObject(font);
+            let _ = windows::Win32::Graphics::Gdi::ReleaseDC(self.hwnd, hdc);
+
+            let caret_y = (INPUT_HEIGHT - CARET_HEIGHT) / 2;
+            let _ = SetCaretPos(self.caret_x, caret_y);
+        }
     }
 
     /// 根据结果数量动态计算窗口大小并居中
@@ -164,7 +196,7 @@ impl LauncherWindowState {
             let screen_h = GetSystemMetrics(SM_CYSCREEN);
 
             let x = (screen_w - self.width) / 2;
-            let y = screen_h * 22 / 100; // 屏幕上方约 22% 处
+            let y = screen_h * 22 / 100;
 
             let _ = SetWindowPos(
                 self.hwnd,
@@ -178,7 +210,7 @@ impl LauncherWindowState {
         }
     }
 
-    /// 显示并聚焦窗口
+    /// 强制夺取 Windows 前景焦点并激活输入
     pub fn show(&mut self) {
         let cfg = self.config_mgr.get();
         if cfg.general.clear_on_show {
@@ -190,7 +222,7 @@ impl LauncherWindowState {
 
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.hwnd);
+            force_foreground_window(self.hwnd);
         }
     }
 
@@ -222,6 +254,75 @@ impl LauncherWindowState {
     }
 }
 
+/// 强力夺取前台激活与键盘焦点 (破除 Windows Foreground Lock 限制)
+unsafe fn force_foreground_window(hwnd: HWND) {
+    unsafe {
+        let fg_hwnd = GetForegroundWindow();
+        let current_thread = GetCurrentThreadId();
+        let mut fg_pid = 0;
+        let fg_thread = GetWindowThreadProcessId(fg_hwnd, Some(&mut fg_pid));
+
+        if current_thread != fg_thread && fg_thread != 0 {
+            let _ = AttachThreadInput(current_thread, fg_thread, true.into());
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetActiveWindow(hwnd);
+            let _ = SetFocus(hwnd);
+            let _ = AttachThreadInput(current_thread, fg_thread, false.into());
+        } else {
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetActiveWindow(hwnd);
+            let _ = SetFocus(hwnd);
+        }
+    }
+}
+
+/// 从 Windows 剪贴板读取 UTF-16 文本
+fn get_clipboard_text() -> Option<String> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+        use windows::Win32::System::Memory::GlobalLock;
+        use windows::Win32::System::Memory::GlobalUnlock;
+
+        if OpenClipboard(HWND::default()).is_err() {
+            return None;
+        }
+
+        const CF_UNICODETEXT: u32 = 13;
+        let handle = GetClipboardData(CF_UNICODETEXT);
+        let text = if let Ok(h) = handle {
+            if !h.0.is_null() {
+                let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(h.0)) as *const u16;
+                if !ptr.is_null() {
+                    let mut len = 0;
+                    while *ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                    let slice = std::slice::from_raw_parts(ptr, len);
+                    let s = String::from_utf16_lossy(slice);
+                    let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(h.0));
+                    Some(s)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let _ = CloseClipboard();
+        text
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// 窗口消息分发处理函数
 unsafe extern "system" fn launcher_wndproc(
     hwnd: HWND,
@@ -234,6 +335,24 @@ unsafe extern "system" fn launcher_wndproc(
         let state = unsafe { &mut *(user_data as *mut LauncherWindowState) };
 
         match msg {
+            WM_SETFOCUS => {
+                unsafe {
+                    let _ = CreateCaret(hwnd, HBITMAP::default(), 2, CARET_HEIGHT);
+                    let _ = ShowCaret(hwnd);
+                    let caret_y = (INPUT_HEIGHT - CARET_HEIGHT) / 2;
+                    let _ = SetCaretPos(state.caret_x, caret_y);
+                }
+                return LRESULT(0);
+            }
+            WM_KILLFOCUS => {
+                unsafe {
+                    let _ = DestroyCaret();
+                }
+                return LRESULT(0);
+            }
+            WM_MOUSEACTIVATE => {
+                return LRESULT(MA_ACTIVATE as isize);
+            }
             WM_ACTIVATE => {
                 let active = (wparam.0 & 0xFFFF) as u32;
                 if active == WA_INACTIVE {
@@ -291,6 +410,21 @@ unsafe extern "system" fn launcher_wndproc(
             }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wparam.0 as u16);
+                let is_ctrl = unsafe { (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 };
+
+                // 快捷键 Ctrl + V 粘贴
+                if vk == VK_V && is_ctrl {
+                    if let Some(text) = get_clipboard_text() {
+                        let clean_text = text.replace(&['\r', '\n'][..], "");
+                        state.query.push_str(&clean_text);
+                        state.update_search();
+                        unsafe {
+                            let _ = InvalidateRect(hwnd, None, false);
+                        }
+                    }
+                    return LRESULT(0);
+                }
+
                 if vk == VK_ESCAPE {
                     state.hide();
                     return LRESULT(0);
@@ -317,6 +451,13 @@ unsafe extern "system" fn launcher_wndproc(
                 } else if vk == VK_RETURN {
                     state.execute_selected();
                     return LRESULT(0);
+                } else if vk == VK_DELETE {
+                    state.query.clear();
+                    state.update_search();
+                    unsafe {
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    return LRESULT(0);
                 }
             }
             WM_CHAR => {
@@ -341,6 +482,9 @@ unsafe extern "system" fn launcher_wndproc(
                 }
             }
             WM_LBUTTONDOWN => {
+                unsafe {
+                    let _ = SetFocus(hwnd);
+                }
                 let y = ((lparam.0 >> 16) & 0xFFFF) as i32;
                 if y > INPUT_HEIGHT {
                     let clicked_index = (y - INPUT_HEIGHT) / ITEM_HEIGHT;
@@ -432,8 +576,7 @@ unsafe fn render_launcher_ui(hwnd: HWND, state: &LauncherWindowState) {
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
         } else {
-            let query_display = format!("{}|", state.query);
-            let query_h = HSTRING::from(query_display.as_str());
+            let query_h = HSTRING::from(state.query.as_str());
             let mut text_w: Vec<u16> = query_h.as_wide().to_vec();
             DrawTextW(
                 mem_dc,

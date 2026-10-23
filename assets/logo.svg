@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <!-- 深邃石墨底座微渐变 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+
+    <!-- 极光天青向琉璃紫的流光渐变 (Spotlight Ray) -->
+    <linearGradient id="primaryGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="60%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+
+    <!-- 柔和内发光环 -->
+    <linearGradient id="ringGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#818CF8" stop-opacity="0.8"/>
+    </linearGradient>
+
+    <filter id="subtleGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- 黄金曲率超椭圆底座 (Squircle) -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bgGrad)" />
+
+  <!-- 外部聚合透镜光圈 (Aperture / Focus Ring) -->
+  <circle cx="32" cy="32" r="21" fill="none" stroke="url(#ringGrad)" stroke-width="2.5" stroke-dasharray="3.5 2" />
+
+  <!-- 内部聚焦点光环 (Spotlight Glow) -->
+  <circle cx="32" cy="32" r="14" fill="#6366F1" opacity="0.12" filter="url(#subtleGlow)" />
+
+  <!-- 核心标识: 极简流线几何 "1" (The One / Unified Focus) -->
+  <!-- 左上 45° 引导切角 + 坚毅利落的垂直立柱 + 底部轻量底座 -->
+  <path d="
+    M 28 22
+    L 33 17
+    L 37 17
+    L 37 43
+    L 32 43
+    L 32 23
+    L 28 25
+    Z"
+    fill="url(#primaryGrad)"
+  />
+
+  <!-- 右上角极速点芒 (Launch Spark: 象征一触即达的微光) -->
+  <circle cx="45" cy="19" r="2.2" fill="#38BDF8" />
+  <circle cx="45" cy="19" r="1" fill="#FFFFFF" />
+</svg>
