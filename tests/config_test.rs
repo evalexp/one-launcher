@@ -14,8 +14,13 @@ fn test_default_config_template_is_valid() {
     assert!(config.general.hide_on_blur);
     assert_eq!(config.appearance.backdrop_effect, "mica");
     assert!(config.apps.scan_uwp);
-    assert!(config.everything.enabled);
-    assert_eq!(config.everything.prefix, "fs:");
+    
+    // 验证 Everything 插件通过 [plugins.everything] 注册
+    assert!(config.plugins.contains_key("everything"));
+    let ev = &config.plugins["everything"];
+    assert!(ev.enabled);
+    assert_eq!(ev.prefix, "fs:");
+    assert_eq!(ev.config.get("max_results").and_then(|v| v.as_integer()), Some(9));
 }
 
 #[test]
@@ -30,7 +35,7 @@ fn test_partial_config_fallback_to_defaults() {
     // 其他字段应该自动继承默认值
     assert_eq!(parsed.general.max_results, 9);
     assert_eq!(parsed.appearance.width, 680);
-    assert!(parsed.everything.enabled);
+    assert!(parsed.plugins.contains_key("everything"));
 }
 
 #[test]

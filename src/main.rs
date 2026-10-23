@@ -1,8 +1,8 @@
 #![windows_subsystem = "windows"]
 
 use one_launcher::config::ConfigManager;
-use one_launcher::everything::EverythingClient;
 use one_launcher::indexer::AppIndexManager;
+use one_launcher::plugin::PluginManager;
 use one_launcher::single_instance::SingleInstance;
 use one_launcher::ui::run_launcher;
 use tracing::{error, info};
@@ -42,16 +42,11 @@ fn main() {
     // 2. 初始化应用索引管理器 (后台扫描开始菜单与系统应用)
     let app_indexer = AppIndexManager::new(&cfg.apps);
 
-    // 3. 初始化官方 Everything SDK 客户端
-    let everything_client = EverythingClient::new();
-    if everything_client.is_available() {
-        info!("Everything 服务连接成功，文件搜索功能就绪！");
-    } else {
-        info!("Everything 未在后台运行，搜索将以系统应用程序为主。");
-    }
+    // 3. 初始化插件管理系统 (加载启用的 QuickJS 插件与原生动态库绑定)
+    let plugin_mgr = PluginManager::init(&cfg.plugins);
 
     // 4. 运行原生无边框极速窗口
-    if let Err(err) = run_launcher(config_mgr, app_indexer, everything_client) {
+    if let Err(err) = run_launcher(config_mgr, app_indexer, plugin_mgr) {
         error!("运行时发生错误: {}", err);
     }
 }

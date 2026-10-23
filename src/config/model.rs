@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// 应用程序全局主配置
@@ -8,16 +9,32 @@ pub struct AppConfig {
     pub general: GeneralConfig,
     pub appearance: AppearanceConfig,
     pub apps: AppsConfig,
-    pub everything: EverythingConfig,
+    pub plugins: HashMap<String, PluginConfig>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
+        let mut plugins = HashMap::new();
+        let mut everything_config = toml::Table::new();
+        everything_config.insert("max_results".to_string(), toml::Value::Integer(9));
+
+        plugins.insert(
+            "everything".to_string(),
+            PluginConfig {
+                enabled: true,
+                prefix: "fs:".to_string(),
+                name: "Everything 全盘搜索".to_string(),
+                path: PathBuf::from("plugins/everything"),
+                entry: "index.js".to_string(),
+                config: everything_config,
+            },
+        );
+
         Self {
             general: GeneralConfig::default(),
             appearance: AppearanceConfig::default(),
             apps: AppsConfig::default(),
-            everything: EverythingConfig::default(),
+            plugins,
         }
     }
 }
@@ -102,24 +119,25 @@ impl Default for AppsConfig {
     }
 }
 
-/// Everything 搜索联动配置
+/// 插件拓展配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EverythingConfig {
-    /// 是否开启 Everything 原生 SDK/IPC 联动
+pub struct PluginConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 专用触发前缀；默认 "fs:" 表明是一次文件搜索动作；若留空 "" 则为混合搜索
     pub prefix: String,
-    /// Everything 返回结果的最大数量上限
-    pub max_results: usize,
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default = "default_entry")]
+    pub entry: String,
+    /// 插件自定义专属配置块 [plugins.<id>.config]
+    #[serde(default)]
+    pub config: toml::Table,
 }
 
-impl Default for EverythingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            prefix: "fs:".to_string(),
-            max_results: 20,
-        }
-    }
+fn default_true() -> bool {
+    true
+}
+
+fn default_entry() -> String {
+    "index.js".to_string()
 }

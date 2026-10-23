@@ -13,9 +13,27 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINFO};
 
 static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<isize>>>> = OnceLock::new();
+static FOLDER_ICON: OnceLock<Option<isize>> = OnceLock::new();
+static FILE_ICON: OnceLock<Option<isize>> = OnceLock::new();
 
 fn get_cache() -> &'static Mutex<HashMap<String, Option<isize>>> {
     ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 获取全局常驻的通用文件夹图标 (零开销直读)
+pub fn get_folder_icon() -> Option<HICON> {
+    let icon_ptr = FOLDER_ICON.get_or_init(|| {
+        get_icon_for_path(r"C:\Windows").map(|h| h.0 as isize)
+    });
+    icon_ptr.map(|h| HICON(h as *mut _))
+}
+
+/// 获取全局常驻的通用普通文件图标 (零开销直读)
+pub fn get_file_icon() -> Option<HICON> {
+    let icon_ptr = FILE_ICON.get_or_init(|| {
+        get_icon_for_path(r"C:\Windows\explorer.exe").map(|h| h.0 as isize)
+    });
+    icon_ptr.map(|h| HICON(h as *mut _))
 }
 
 /// 获取指定路径或 UWP 应用名称的 32x32 原生 Windows HICON 图标（支持 .exe, .lnk, 目录及 UWP 应用）

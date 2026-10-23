@@ -1,7 +1,7 @@
 pub mod config;
-pub mod everything;
 pub mod hotkey;
 pub mod indexer;
+pub mod plugin;
 pub mod single_instance;
 pub mod tray;
 pub mod ui;

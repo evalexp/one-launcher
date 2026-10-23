@@ -1,7 +1,7 @@
 use crate::config::ConfigManager;
-use crate::everything::EverythingClient;
 use crate::hotkey::{register_global_hotkey, unregister_global_hotkey};
 use crate::indexer::AppIndexManager;
+use crate::plugin::PluginManager;
 use crate::tray::{
     TrayIcon, ID_TRAY_EDIT_CONFIG, ID_TRAY_EXIT, ID_TRAY_RELOAD_CONFIG, WM_TRAYICON,
 };
@@ -49,7 +49,7 @@ pub struct LauncherWindowState {
     hwnd: HWND,
     config_mgr: ConfigManager,
     app_indexer: AppIndexManager,
-    everything_client: EverythingClient,
+    plugin_mgr: PluginManager,
     tray: Option<TrayIcon>,
     query: String,
     results: Vec<SearchResultItem>,
@@ -63,7 +63,7 @@ impl LauncherWindowState {
         hwnd: HWND,
         config_mgr: ConfigManager,
         app_indexer: AppIndexManager,
-        everything_client: EverythingClient,
+        plugin_mgr: PluginManager,
     ) -> Self {
         let cfg = config_mgr.get();
         let width = cfg.appearance.width.max(500) as i32;
@@ -80,7 +80,7 @@ impl LauncherWindowState {
             hwnd,
             config_mgr,
             app_indexer,
-            everything_client,
+            plugin_mgr,
             tray,
             query: String::new(),
             results: Vec::new(),
@@ -100,13 +100,14 @@ impl LauncherWindowState {
                     warn!("重新注册热键提示: {}", err);
                 }
                 self.app_indexer.reload(&new_cfg.apps);
+                self.plugin_mgr = PluginManager::init(&new_cfg.plugins);
                 self.width = new_cfg.appearance.width.max(500) as i32;
                 self.update_search();
                 self.update_window_size();
                 unsafe {
                     let _ = InvalidateRect(self.hwnd, None, false);
                 }
-                info!("OneLauncher 配置与热键已成功重载生效！");
+                info!("OneLauncher 配置、热键与插件系统已成功重载生效！");
             }
             Err(err) => {
                 warn!("重载配置失败: {}", err);
@@ -114,7 +115,7 @@ impl LauncherWindowState {
         }
     }
 
-    /// 执行搜索与数据聚合
+    /// 执行搜索与数据路由分发 (默认无输入不展示任何结果，按 prefix 独占路由，应用搜索免前缀)
     pub fn update_search(&mut self) {
         let cfg = self.config_mgr.get();
         let max_results = cfg.general.max_results;
@@ -122,24 +123,24 @@ impl LauncherWindowState {
 
         let mut items = Vec::new();
 
-        let prefix = &cfg.everything.prefix;
-        let is_everything_prefix = !prefix.is_empty() && q.starts_with(prefix);
+        // 默认不显示任何结果，只有在输入后才搜索显示结果
+        if q.is_empty() {
+            self.results = items;
+            self.selected_index = 0;
+            self.update_window_size();
+            return;
+        }
 
-        if is_everything_prefix && cfg.everything.enabled {
-            let pure_query = q[prefix.len()..].trim();
+        // 检查是否命中已注册的插件前缀 (严格 prefix 独占路由，绝不进行混合搜索)
+        if let Some((plugin, pure_query)) = self.plugin_mgr.match_prefix(&q) {
             if !pure_query.is_empty() {
-                match self.everything_client.search(pure_query, cfg.everything.max_results as usize) {
-                    Ok(records) => {
-                        for rec in records {
-                            items.push(SearchResultItem::from_everything(rec));
-                        }
-                    }
-                    Err(e) => {
-                        debug_assert!(true, "Everything 检索出错: {}", e);
-                    }
+                let p_results = self.plugin_mgr.query(&plugin.id, pure_query);
+                for p_item in p_results {
+                    items.push(SearchResultItem::from_plugin(&plugin.name, &plugin.id, p_item));
                 }
             }
         } else {
+            // 未匹配任何前缀，执行默认的系统核心应用搜索 (基于启动时维护的内存 Cache 毫秒级模糊匹配)
             let matched_apps = self.app_indexer.search(&q, max_results);
             for app in matched_apps {
                 items.push(SearchResultItem::from_app(app));
@@ -227,10 +228,8 @@ impl LauncherWindowState {
                     warn!("启动应用失败: {}", e);
                 }
             }
-            SearchResultKind::Everything(file) => {
-                if let Err(e) = EverythingClient::open_file(&file.full_path) {
-                    warn!("打开文件失败: {}", e);
-                }
+            SearchResultKind::Plugin { plugin_id, item_id, payload } => {
+                self.plugin_mgr.select(plugin_id, item_id, payload);
             }
         }
 
@@ -573,11 +572,19 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
                 let _ = DeleteObject(hl_brush);
             }
 
-            // 1. 左侧绘制 32x32 程序图标 (类似 uTools 呈现)
+            // 1. 左侧绘制 32x32 图标 (对文件夹使用预缓存文件夹图标，对普通文件使用预缓存文件图标，对应用使用原生抽取图标)
             let icon_x = 16;
             let icon_y = y_offset + 12;
 
-            if let Some(hicon) = get_icon_for_path(&item.icon_path) {
+            let icon_opt = if item.is_folder {
+                crate::ui::icon_extractor::get_folder_icon()
+            } else if item.icon_path.is_empty() {
+                crate::ui::icon_extractor::get_file_icon()
+            } else {
+                get_icon_for_path(&item.icon_path)
+            };
+
+            if let Some(hicon) = icon_opt {
                 let _ = DrawIconEx(mem_dc, icon_x, icon_y, hicon, 32, 32, 0, None, DI_NORMAL);
             } else {
                 // 回退轻量图标占位符
@@ -586,12 +593,12 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
                 let mut fallback_rect = RECT { left: icon_x, top: icon_y, right: icon_x + 32, bottom: icon_y + 32 };
                 let sym = match &item.kind {
                     SearchResultKind::App(_) => "⚡",
-                    SearchResultKind::Everything(e) if e.is_folder => "📁",
+                    SearchResultKind::Plugin { .. } if item.is_folder => "📁",
                     _ => "📄",
                 };
                 let sym_h = HSTRING::from(sym);
                 let mut sym_w = sym_h.as_wide().to_vec();
-                DrawTextW(mem_dc, &mut sym_w, &mut fallback_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                let _ = DrawTextW(mem_dc, &mut sym_w, &mut fallback_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             }
 
             // 2. 中间绘制应用程序名称 (上面大字，选中纯白 #FFFFFF，默认柔白 #E4E4E7)
@@ -638,7 +645,7 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
             SelectObject(mem_dc, font_badge);
             let (badge_bg, badge_fg) = match &item.kind {
                 SearchResultKind::App(_) => (COLORREF(0x00332211), COLORREF(0x00F8BD38)), // 蔚蓝天青 #38BDF8
-                SearchResultKind::Everything(e) if e.is_folder => (COLORREF(0x00112233), COLORREF(0x0024BFFB)), // 琥珀暖黄 #FBBF24
+                SearchResultKind::Plugin { .. } if item.is_folder => (COLORREF(0x00112233), COLORREF(0x0024BFFB)), // 琥珀暖黄 #FBBF24
                 _ => (COLORREF(0x00113322), COLORREF(0x0099D334)), // 翡翠翠绿 #34D399
             };
 
@@ -707,7 +714,7 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
 pub fn run_launcher(
     config_mgr: ConfigManager,
     app_indexer: AppIndexManager,
-    everything_client: EverythingClient,
+    plugin_mgr: PluginManager,
 ) -> Result<(), String> {
     unsafe {
         let class_name_w = HSTRING::from(WINDOW_CLASS_NAME);
@@ -760,7 +767,7 @@ pub fn run_launcher(
             hwnd,
             config_mgr,
             app_indexer,
-            everything_client,
+            plugin_mgr,
         ));
 
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
