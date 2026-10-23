@@ -1,3 +1,4 @@
+pub mod icon_extractor;
 pub mod types;
 pub mod window;
 

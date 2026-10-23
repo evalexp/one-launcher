@@ -1,754 +1,548 @@
 use crate::config::ConfigManager;
 use crate::everything::EverythingClient;
-use crate::hotkey::{register_global_hotkey, unregister_global_hotkey, DEFAULT_HOTKEY_ID};
-use crate::indexer::AppIndexManager;
+use crate::hotkey::{register_global_hotkey, unregister_global_hotkey};
+use crate::indexer::{AppIndexManager, AppItem};
 use crate::tray::{
     TrayIcon, ID_TRAY_EDIT_CONFIG, ID_TRAY_EXIT, ID_TRAY_RELOAD_CONFIG, WM_TRAYICON,
 };
-use crate::ui::types::{SearchResultItem, SearchResultKind};
-use tracing::{info, warn};
-use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetTextExtentPoint32W, InvalidateRect,
-    SelectObject, SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
-    DT_VCENTER, HBITMAP, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+use crate::ui::icon_extractor::get_icon_for_path;
+use parking_lot::Mutex;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use slint::{ComponentHandle, SharedString, VecModel, Weak};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::OnceLock;
+use tracing::{error, info, warn};
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, SetActiveWindow, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_DELETE,
-    VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_V,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CreateCaret, CreateWindowExW, DefWindowProcW, DestroyCaret, DestroyWindow,
-    DispatchMessageW, GetClientRect, GetForegroundWindow, GetMessageW, GetSystemMetrics,
-    GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, PostQuitMessage, RegisterClassW,
-    SetCaretPos, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowCaret, ShowWindow,
-    GWLP_USERDATA, HWND_TOPMOST, MA_ACTIVATE, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_SHOWWINDOW,
-    SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
-    WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT,
-    WM_RBUTTONUP, WM_SETFOCUS, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, PostQuitMessage, RegisterClassW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, TranslateMessage, GWL_EXSTYLE,
+    HWND_MESSAGE, HWND_TOPMOST, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, WA_INACTIVE, WM_ACTIVATE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_HOTKEY, WM_RBUTTONUP, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
-#[link(name = "user32")]
-unsafe extern "system" {
-    fn AttachThreadInput(idattach: u32, idattachto: u32, fattach: windows::Win32::Foundation::BOOL) -> windows::Win32::Foundation::BOOL;
+slint::include_modules!();
+
+const SLINT_SUBCLASS_ID: usize = 0x4001;
+static SLINT_WINDOW_WEAK: OnceLock<Mutex<Option<Weak<AppWindow>>>> = OnceLock::new();
+static MSG_HWND_CONTAINER: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+enum LaunchTarget {
+    App(AppItem),
+    File(PathBuf),
 }
 
-const WINDOW_CLASS_NAME: &str = "OneLauncher_MainWindow_Class";
-const INPUT_HEIGHT: i32 = 56;
-const ITEM_HEIGHT: i32 = 50;
-const CARET_HEIGHT: i32 = 24;
-
-pub struct LauncherWindowState {
+/// 拦截 Slint 主窗口的 Win32 消息，监听失去焦点 (WM_ACTIVATE -> WA_INACTIVE) 并自动隐藏
+unsafe extern "system" fn slint_wnd_subclass_proc(
     hwnd: HWND,
-    config_mgr: ConfigManager,
-    app_indexer: AppIndexManager,
-    everything_client: EverythingClient,
-    tray: Option<TrayIcon>,
-    query: String,
-    results: Vec<SearchResultItem>,
-    selected_index: usize,
-    width: i32,
-    caret_x: i32,
-}
-
-impl LauncherWindowState {
-    pub fn new(
-        hwnd: HWND,
-        config_mgr: ConfigManager,
-        app_indexer: AppIndexManager,
-        everything_client: EverythingClient,
-    ) -> Self {
-        let cfg = config_mgr.get();
-        let width = cfg.appearance.width as i32;
-
-        let tray = match TrayIcon::create(hwnd) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                warn!("未能初始化系统托盘图标: {}", e);
-                None
-            }
-        };
-
-        let mut state = Self {
-            hwnd,
-            config_mgr,
-            app_indexer,
-            everything_client,
-            tray,
-            query: String::new(),
-            results: Vec::new(),
-            selected_index: 0,
-            width,
-            caret_x: 20,
-        };
-        state.update_search();
-        state
-    }
-
-    /// 手动重新加载配置（由托盘菜单触发）
-    pub fn reload_config(&mut self) {
-        match self.config_mgr.reload() {
-            Ok(new_cfg) => {
-                if let Err(err) = register_global_hotkey(self.hwnd, &new_cfg.general.hotkey) {
-                    warn!("重新注册热键提示: {}", err);
-                }
-                self.app_indexer.reload(&new_cfg.apps);
-                self.width = new_cfg.appearance.width as i32;
-                self.update_search();
-                unsafe {
-                    let _ = InvalidateRect(self.hwnd, None, false);
-                }
-                info!("OneLauncher 配置与热键已成功重载生效！");
-            }
-            Err(err) => {
-                warn!("重载配置失败: {}", err);
-            }
-        }
-    }
-
-    /// 执行搜索与数据聚合
-    pub fn update_search(&mut self) {
-        let cfg = self.config_mgr.get();
-        let max_results = cfg.general.max_results;
-        let q = self.query.trim().to_string();
-
-        let mut items = Vec::new();
-
-        let prefix = &cfg.everything.prefix;
-        let is_everything_prefix = !prefix.is_empty() && q.starts_with(prefix);
-
-        if is_everything_prefix && cfg.everything.enabled {
-            let pure_query = q[prefix.len()..].trim();
-            if !pure_query.is_empty() {
-                if let Ok(files) = self.everything_client.search(pure_query, max_results) {
-                    for f in files {
-                        items.push(SearchResultItem::from_everything(f));
-                    }
-                }
-            }
-        } else {
-            let matched_apps = self.app_indexer.search(&q, max_results);
-            for app in matched_apps {
-                items.push(SearchResultItem::from_app(app));
-            }
-
-            if cfg.everything.enabled && prefix.is_empty() && !q.is_empty() {
-                let remaining = max_results.saturating_sub(items.len());
-                if remaining > 0 {
-                    if let Ok(files) = self.everything_client.search(&q, remaining) {
-                        for f in files {
-                            items.push(SearchResultItem::from_everything(f));
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _uid: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_ACTIVATE {
+        let state = (wparam.0 & 0xFFFF) as u32;
+        if state == WA_INACTIVE {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(lock) = SLINT_WINDOW_WEAK.get() {
+                    if let Some(weak) = lock.lock().as_ref() {
+                        if let Some(win) = weak.upgrade() {
+                            if win.window().is_visible() {
+                                let _ = win.hide();
+                            }
                         }
                     }
                 }
-            }
-        }
-
-        self.results = items;
-        if self.selected_index >= self.results.len() {
-            self.selected_index = 0;
-        }
-
-        self.update_caret_position();
-        self.resize_window();
-    }
-
-    /// 更新输入光标位置并协助 IME 输入法精准跟随
-    pub fn update_caret_position(&mut self) {
-        unsafe {
-            let hdc = windows::Win32::Graphics::Gdi::GetDC(self.hwnd);
-            let font = CreateFontW(
-                22, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 2, 0,
-                PCWSTR(HSTRING::from("Segoe UI").as_ptr()),
-            );
-            let old_font = SelectObject(hdc, font);
-
-            let mut size = SIZE::default();
-            if self.query.is_empty() {
-                self.caret_x = 20;
-            } else {
-                let text_utf16: Vec<u16> = self.query.encode_utf16().collect();
-                let _ = GetTextExtentPoint32W(hdc, &text_utf16, &mut size);
-                self.caret_x = (20 + size.cx).min(self.width - 24);
-            }
-
-            SelectObject(hdc, old_font);
-            let _ = DeleteObject(font);
-            let _ = windows::Win32::Graphics::Gdi::ReleaseDC(self.hwnd, hdc);
-
-            let caret_y = (INPUT_HEIGHT - CARET_HEIGHT) / 2;
-            let _ = SetCaretPos(self.caret_x, caret_y);
+            });
         }
     }
-
-    /// 根据结果数量动态计算窗口大小并居中
-    pub fn resize_window(&self) {
-        let count = self.results.len();
-        let total_height = INPUT_HEIGHT + (count as i32 * ITEM_HEIGHT) + 8;
-
-        unsafe {
-            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
-            let x = (screen_w - self.width) / 2;
-            let y = screen_h * 22 / 100;
-
-            let _ = SetWindowPos(
-                self.hwnd,
-                HWND_TOPMOST,
-                x,
-                y,
-                self.width,
-                total_height,
-                SWP_SHOWWINDOW,
-            );
-        }
-    }
-
-    /// 强制夺取 Windows 前景焦点并激活输入
-    pub fn show(&mut self) {
-        let cfg = self.config_mgr.get();
-        if cfg.general.clear_on_show {
-            self.query.clear();
-            self.update_search();
-        } else {
-            self.resize_window();
-        }
-
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
-            force_foreground_window(self.hwnd);
-        }
-    }
-
-    /// 隐藏窗口
-    pub fn hide(&self) {
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
-        }
-    }
-
-    /// 执行激活选定条目
-    pub fn execute_selected(&self) {
-        if self.results.is_empty() {
-            return;
-        }
-
-        if let Some(item) = self.results.get(self.selected_index) {
-            match &item.kind {
-                SearchResultKind::App(app) => {
-                    let _ = AppIndexManager::launch(app);
-                }
-                SearchResultKind::Everything(file) => {
-                    let _ = EverythingClient::open_file(&file.full_path);
-                }
-            }
-        }
-
-        self.hide();
-    }
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// 强力夺取前台激活与键盘焦点 (破除 Windows Foreground Lock 限制)
-unsafe fn force_foreground_window(hwnd: HWND) {
-    unsafe {
-        let fg_hwnd = GetForegroundWindow();
-        let current_thread = GetCurrentThreadId();
-        let mut fg_pid = 0;
-        let fg_thread = GetWindowThreadProcessId(fg_hwnd, Some(&mut fg_pid));
-
-        if current_thread != fg_thread && fg_thread != 0 {
-            let _ = AttachThreadInput(current_thread, fg_thread, true.into());
-            let _ = BringWindowToTop(hwnd);
-            let _ = SetForegroundWindow(hwnd);
-            let _ = SetActiveWindow(hwnd);
-            let _ = SetFocus(hwnd);
-            let _ = AttachThreadInput(current_thread, fg_thread, false.into());
-        } else {
-            let _ = BringWindowToTop(hwnd);
-            let _ = SetForegroundWindow(hwnd);
-            let _ = SetActiveWindow(hwnd);
-            let _ = SetFocus(hwnd);
-        }
-    }
-}
-
-/// 从 Windows 剪贴板读取 UTF-16 文本
-fn get_clipboard_text() -> Option<String> {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
-        use windows::Win32::System::Memory::GlobalLock;
-        use windows::Win32::System::Memory::GlobalUnlock;
-
-        if OpenClipboard(HWND::default()).is_err() {
-            return None;
-        }
-
-        const CF_UNICODETEXT: u32 = 13;
-        let handle = GetClipboardData(CF_UNICODETEXT);
-        let text = if let Ok(h) = handle {
-            if !h.0.is_null() {
-                let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(h.0)) as *const u16;
-                if !ptr.is_null() {
-                    let mut len = 0;
-                    while *ptr.add(len) != 0 {
-                        len += 1;
-                    }
-                    let slice = std::slice::from_raw_parts(ptr, len);
-                    let s = String::from_utf16_lossy(slice);
-                    let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(h.0));
-                    Some(s)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let _ = CloseClipboard();
-        text
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
-}
-
-/// 窗口消息分发处理函数
-unsafe extern "system" fn launcher_wndproc(
+/// 后台消息专用窗口的 WndProc（管理系统托盘与全局热键）
+unsafe extern "system" fn msg_wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let user_data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-    if user_data != 0 {
-        let state = unsafe { &mut *(user_data as *mut LauncherWindowState) };
-
-        match msg {
-            WM_SETFOCUS => {
-                unsafe {
-                    let _ = CreateCaret(hwnd, HBITMAP::default(), 2, CARET_HEIGHT);
-                    let _ = ShowCaret(hwnd);
-                    let caret_y = (INPUT_HEIGHT - CARET_HEIGHT) / 2;
-                    let _ = SetCaretPos(state.caret_x, caret_y);
-                }
-                return LRESULT(0);
+    match msg {
+        WM_HOTKEY => {
+            unsafe {
+                let _ = AllowSetForegroundWindow(std::process::id());
             }
-            WM_KILLFOCUS => {
-                unsafe {
-                    let _ = DestroyCaret();
-                }
-                return LRESULT(0);
-            }
-            WM_MOUSEACTIVATE => {
-                return LRESULT(MA_ACTIVATE as isize);
-            }
-            WM_ACTIVATE => {
-                let active = (wparam.0 & 0xFFFF) as u32;
-                if active == WA_INACTIVE {
-                    let cfg = state.config_mgr.get();
-                    if cfg.general.hide_on_blur {
-                        state.hide();
-                    }
-                }
-                return LRESULT(0);
-            }
-            WM_HOTKEY => {
-                if wparam.0 as i32 == DEFAULT_HOTKEY_ID {
-                    let is_visible = unsafe { IsWindowVisible(hwnd).as_bool() };
-                    if is_visible {
-                        state.hide();
-                    } else {
-                        state.show();
-                    }
-                }
-                return LRESULT(0);
-            }
-            WM_TRAYICON => {
-                let event = (lparam.0 & 0xFFFF) as u32;
-                if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
-                    if let Some(tray) = &state.tray {
-                        tray.show_context_menu();
-                    }
-                } else if event == WM_LBUTTONUP {
-                    let is_visible = unsafe { IsWindowVisible(hwnd).as_bool() };
-                    if is_visible {
-                        state.hide();
-                    } else {
-                        state.show();
-                    }
-                }
-                return LRESULT(0);
-            }
-            WM_COMMAND => {
-                let cmd_id = (wparam.0 & 0xFFFF) as usize;
-                match cmd_id {
-                    ID_TRAY_EDIT_CONFIG => {
-                        let _ = state.config_mgr.open_in_editor();
-                    }
-                    ID_TRAY_RELOAD_CONFIG => {
-                        state.reload_config();
-                    }
-                    ID_TRAY_EXIT => {
-                        unsafe {
-                            let _ = DestroyWindow(hwnd);
-                        }
-                    }
-                    _ => {}
-                }
-                return LRESULT(0);
-            }
-            WM_KEYDOWN => {
-                let vk = VIRTUAL_KEY(wparam.0 as u16);
-                let is_ctrl = unsafe { (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 };
-
-                // 快捷键 Ctrl + V 粘贴
-                if vk == VK_V && is_ctrl {
-                    if let Some(text) = get_clipboard_text() {
-                        let clean_text = text.replace(&['\r', '\n'][..], "");
-                        state.query.push_str(&clean_text);
-                        state.update_search();
-                        unsafe {
-                            let _ = InvalidateRect(hwnd, None, false);
-                        }
-                    }
-                    return LRESULT(0);
-                }
-
-                if vk == VK_ESCAPE {
-                    state.hide();
-                    return LRESULT(0);
-                } else if vk == VK_UP {
-                    if !state.results.is_empty() {
-                        state.selected_index = if state.selected_index == 0 {
-                            state.results.len() - 1
-                        } else {
-                            state.selected_index - 1
-                        };
-                        unsafe {
-                            let _ = InvalidateRect(hwnd, None, false);
-                        }
-                    }
-                    return LRESULT(0);
-                } else if vk == VK_DOWN {
-                    if !state.results.is_empty() {
-                        state.selected_index = (state.selected_index + 1) % state.results.len();
-                        unsafe {
-                            let _ = InvalidateRect(hwnd, None, false);
-                        }
-                    }
-                    return LRESULT(0);
-                } else if vk == VK_RETURN {
-                    state.execute_selected();
-                    return LRESULT(0);
-                } else if vk == VK_DELETE {
-                    state.query.clear();
-                    state.update_search();
-                    unsafe {
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
-                    return LRESULT(0);
-                }
-            }
-            WM_CHAR => {
-                let ch = wparam.0 as u16;
-                if ch == 8 {
-                    // 退格键 Backspace
-                    state.query.pop();
-                    state.update_search();
-                    unsafe {
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
-                    return LRESULT(0);
-                } else if ch >= 32 {
-                    if let Some(c) = char::from_u32(ch as u32) {
-                        state.query.push(c);
-                        state.update_search();
-                        unsafe {
-                            let _ = InvalidateRect(hwnd, None, false);
-                        }
-                        return LRESULT(0);
-                    }
-                }
-            }
-            WM_LBUTTONDOWN => {
-                unsafe {
-                    let _ = SetFocus(hwnd);
-                }
-                let y = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                if y > INPUT_HEIGHT {
-                    let clicked_index = (y - INPUT_HEIGHT) / ITEM_HEIGHT;
-                    if (clicked_index as usize) < state.results.len() {
-                        state.selected_index = clicked_index as usize;
-                        state.execute_selected();
-                    }
-                }
-                return LRESULT(0);
-            }
-            WM_PAINT => {
-                unsafe { render_launcher_ui(hwnd, state); }
-                return LRESULT(0);
-            }
-            WM_DESTROY => {
-                unsafe { PostQuitMessage(0) };
-                return LRESULT(0);
-            }
-            _ => {}
+            let _ = slint::invoke_from_event_loop(move || {
+                toggle_launcher_window();
+            });
+            LRESULT(0)
         }
-    }
-
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
-/// 双缓冲纯原生极速 GDI 渲染器 (微秒级一帧无任何卡顿，内存 < 8MB)
-unsafe fn render_launcher_ui(hwnd: HWND, state: &LauncherWindowState) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-
-    let mut rect = RECT::default();
-    unsafe {
-        let _ = GetClientRect(hwnd, &mut rect);
-    }
-
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-
-    unsafe {
-        // 创建双缓冲内存 DC
-        let mem_dc = CreateCompatibleDC(hdc);
-        let mem_bmp = CreateCompatibleBitmap(hdc, width, height);
-        let old_bmp = SelectObject(mem_dc, mem_bmp);
-
-        let is_dark = state.config_mgr.get().appearance.theme != "light";
-
-        // 背景颜色配置
-        let bg_color = if is_dark { COLORREF(0x00202020) } else { COLORREF(0x00F8F8F8) };
-        let text_color = if is_dark { COLORREF(0x00FFFFFF) } else { COLORREF(0x00111111) };
-        let subtext_color = if is_dark { COLORREF(0x00A0A0A0) } else { COLORREF(0x00666666) };
-        let highlight_bg = if is_dark { COLORREF(0x003A3A3A) } else { COLORREF(0x00E0E0E0) };
-
-        // 填充主窗口背景
-        let bg_brush = CreateSolidBrush(bg_color);
-        FillRect(mem_dc, &rect, bg_brush);
-        let _ = DeleteObject(bg_brush);
-
-        SetBkMode(mem_dc, TRANSPARENT);
-
-        // 创建字体 (Segoe UI / 微软雅黑)
-        let font_title = CreateFontW(
-            22, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 2, 0,
-            PCWSTR(HSTRING::from("Segoe UI").as_ptr()),
-        );
-        let font_sub = CreateFontW(
-            15, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 2, 0,
-            PCWSTR(HSTRING::from("Segoe UI").as_ptr()),
-        );
-
-        let old_font = SelectObject(mem_dc, font_title);
-
-        // 1. 绘制顶部搜索框
-        let mut input_rect = RECT {
-            left: 20,
-            top: 14,
-            right: width - 20,
-            bottom: INPUT_HEIGHT,
-        };
-
-        SetTextColor(mem_dc, text_color);
-        if state.query.is_empty() {
-            SetTextColor(mem_dc, subtext_color);
-            let placeholder = HSTRING::from("输入应用名称、简拼(如 wx) 或输入 fs: 搜索全盘文件...");
-            let mut text_w: Vec<u16> = placeholder.as_wide().to_vec();
-            DrawTextW(
-                mem_dc,
-                &mut text_w,
-                &mut input_rect,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
-            );
-        } else {
-            let query_h = HSTRING::from(state.query.as_str());
-            let mut text_w: Vec<u16> = query_h.as_wide().to_vec();
-            DrawTextW(
-                mem_dc,
-                &mut text_w,
-                &mut input_rect,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
-            );
-        }
-
-        // 2. 绘制下方的搜索结果条目列表
-        let mut y_offset = INPUT_HEIGHT;
-
-        for (i, item) in state.results.iter().enumerate() {
-            let is_selected = i == state.selected_index;
-
-            let row_rect = RECT {
-                left: 8,
-                top: y_offset,
-                right: width - 8,
-                bottom: y_offset + ITEM_HEIGHT,
-            };
-
-            // 高亮选定背景
-            if is_selected {
-                let hl_brush = CreateSolidBrush(highlight_bg);
-                FillRect(mem_dc, &row_rect, hl_brush);
-                let _ = DeleteObject(hl_brush);
+        WM_TRAYICON => {
+            let event = (lparam.0 & 0xFFFF) as u32;
+            if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
+                // 托盘右键菜单
+                unsafe {
+                    let state_ptr = GetWindowLongPtrW(
+                        hwnd,
+                        windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+                    ) as *mut TrayContext;
+                    if !state_ptr.is_null() {
+                        let ctx = &*state_ptr;
+                        if let Some(tray) = &ctx.tray {
+                            tray.show_context_menu();
+                        }
+                    }
+                }
             }
-
-            // 绘制类型徽章
-            SelectObject(mem_dc, font_sub);
-            SetTextColor(mem_dc, subtext_color);
-            let mut badge_rect = RECT {
-                left: 20,
-                top: y_offset,
-                right: 70,
-                bottom: y_offset + ITEM_HEIGHT,
-            };
-            let badge_h = HSTRING::from(item.badge.as_str());
-            let mut badge_w: Vec<u16> = badge_h.as_wide().to_vec();
-            DrawTextW(
-                mem_dc,
-                &mut badge_w,
-                &mut badge_rect,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
-            );
-
-            // 绘制主标题
-            SelectObject(mem_dc, font_title);
-            SetTextColor(mem_dc, text_color);
-            let mut title_rect = RECT {
-                left: 80,
-                top: y_offset + 4,
-                right: width - 20,
-                bottom: y_offset + 28,
-            };
-            let title_h = HSTRING::from(item.title.as_str());
-            let mut title_w: Vec<u16> = title_h.as_wide().to_vec();
-            DrawTextW(
-                mem_dc,
-                &mut title_w,
-                &mut title_rect,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
-            );
-
-            // 绘制副标题 (路径)
-            SelectObject(mem_dc, font_sub);
-            SetTextColor(mem_dc, subtext_color);
-            let mut sub_rect = RECT {
-                left: 80,
-                top: y_offset + 28,
-                right: width - 20,
-                bottom: y_offset + ITEM_HEIGHT - 4,
-            };
-            let sub_h = HSTRING::from(item.subtitle.as_str());
-            let mut sub_w: Vec<u16> = sub_h.as_wide().to_vec();
-            DrawTextW(
-                mem_dc,
-                &mut sub_w,
-                &mut sub_rect,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
-            );
-
-            y_offset += ITEM_HEIGHT;
+            LRESULT(0)
         }
+        WM_COMMAND => {
+            let cmd_id = (wparam.0 & 0xFFFF) as usize;
+            unsafe {
+                let state_ptr = GetWindowLongPtrW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+                ) as *mut TrayContext;
 
-        // 从内存缓冲拷贝至屏幕
-        let _ = BitBlt(hdc, 0, 0, width, height, mem_dc, 0, 0, SRCCOPY);
-
-        // 释放清理 GDI 句柄
-        SelectObject(mem_dc, old_font);
-        SelectObject(mem_dc, old_bmp);
-        let _ = DeleteObject(font_title);
-        let _ = DeleteObject(font_sub);
-        let _ = DeleteObject(mem_bmp);
-        let _ = DeleteDC(mem_dc);
-        let _ = EndPaint(hwnd, &ps);
+                if !state_ptr.is_null() {
+                    let ctx = &mut *state_ptr;
+                    match cmd_id {
+                        ID_TRAY_EDIT_CONFIG => {
+                            if let Err(e) = ctx.config_mgr.open_in_editor() {
+                                warn!("打开配置文件失败: {}", e);
+                            }
+                        }
+                        ID_TRAY_RELOAD_CONFIG => {
+                            match ctx.config_mgr.reload() {
+                                Ok(new_cfg) => {
+                                    if let Err(e) = register_global_hotkey(hwnd, &new_cfg.general.hotkey) {
+                                        warn!("重载热键提示: {}", e);
+                                    }
+                                    ctx.app_indexer.reload(&new_cfg.apps);
+                                    info!("OneLauncher 配置与热键已成功重载生效！");
+                                    // 刷新 UI 中的结果
+                                    let app_indexer = ctx.app_indexer.clone();
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        refresh_initial_apps(&app_indexer);
+                                    });
+                                }
+                                Err(e) => warn!("重载配置失败: {}", e),
+                            }
+                        }
+                        ID_TRAY_EXIT => {
+                            info!("正在退出 OneLauncher...");
+                            let _ = slint::quit_event_loop();
+                            PostQuitMessage(0);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            unregister_global_hotkey(hwnd);
+            unsafe {
+                PostQuitMessage(0);
+            }
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
-/// 构建并运行启动器主窗口与 Win32 消息循环
+struct TrayContext {
+    config_mgr: ConfigManager,
+    app_indexer: AppIndexManager,
+    tray: Option<TrayIcon>,
+}
+
+/// 切换启动器主窗口显示状态
+fn toggle_launcher_window() {
+    if let Some(lock) = SLINT_WINDOW_WEAK.get() {
+        if let Some(weak) = lock.lock().as_ref() {
+            if let Some(win) = weak.upgrade() {
+                if win.window().is_visible() {
+                    let _ = win.hide();
+                } else {
+                    let _ = win.show();
+                    // 居中并置顶
+                    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+                    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+                    let win_w = 720;
+                    let x = (screen_w - win_w) / 2;
+                    let y = (screen_h as f32 * 0.22) as i32;
+                    win.window().set_position(slint::PhysicalPosition::new(x, y));
+
+                    if let Ok(handle) = win.window().window_handle().window_handle() {
+                        if let RawWindowHandle::Win32(wh) = handle.as_raw() {
+                            let slint_hwnd = HWND(wh.hwnd.get() as _);
+                            unsafe {
+                                let _ = SetWindowPos(
+                                    slint_hwnd,
+                                    HWND_TOPMOST,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                                );
+                                let _ = SetForegroundWindow(slint_hwnd);
+                                let _ = SetActiveWindow(slint_hwnd);
+                                let _ = SetFocus(slint_hwnd);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 刷新默认初始应用列表
+fn refresh_initial_apps(app_indexer: &AppIndexManager) {
+    if let Some(lock) = SLINT_WINDOW_WEAK.get() {
+        if let Some(weak) = lock.lock().as_ref() {
+            if let Some(win) = weak.upgrade() {
+                let initial_apps = app_indexer.search("", 20);
+                let mut slint_items = Vec::with_capacity(initial_apps.len());
+                for app in initial_apps {
+                    let path_str = app.path.to_string_lossy().to_string();
+                    let icon = get_icon_for_path(&path_str);
+                    slint_items.push(SearchItemData {
+                        title: SharedString::from(&app.name),
+                        path: SharedString::from(&path_str),
+                        badge: SharedString::from("应用"),
+                        is_app: true,
+                        is_folder: false,
+                        has_icon: icon.is_some(),
+                        icon: icon.unwrap_or_default(),
+                    });
+                }
+                win.set_results(Rc::new(VecModel::from(slint_items)).into());
+                win.set_selected_index(0);
+            }
+        }
+    }
+}
+
+/// 主启动入口
 pub fn run_launcher(
     config_mgr: ConfigManager,
     app_indexer: AppIndexManager,
     everything_client: EverythingClient,
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = config_mgr.get();
+    let window = AppWindow::new()?;
+    let window_weak = window.as_weak();
+
+    // 存储全局弱引用，供 Win32 回调安全调度
+    SLINT_WINDOW_WEAK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .replace(window_weak.clone());
+
+    // 获取 Slint 原生 Win32 HWND 句柄
+    let slint_handle = window.window().window_handle();
+    let raw_handle = slint_handle.window_handle()?.as_raw();
+    let slint_hwnd = match raw_handle {
+        RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as _),
+        _ => return Err("未能获取 Win32 窗口句柄".into()),
+    };
+
+    // 设置初始几何属性与屏幕垂直 22% 黄金分割居中
+    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    let win_w = cfg.appearance.width.max(500) as i32;
+    let x = (screen_w - win_w) / 2;
+    let y = (screen_h as f32 * 0.22) as i32;
+    window.set_window_width(win_w);
+    window.window().set_position(slint::PhysicalPosition::new(x, y));
+
+    // 配置无边框圆角、置顶并移除任务栏图标 (WS_EX_TOOLWINDOW)
     unsafe {
-        let class_name_w = HSTRING::from(WINDOW_CLASS_NAME);
-        let hinstance = GetModuleHandleW(PCWSTR::null())
-            .map_err(|e| format!("获取模块句柄失败: {}", e))?;
+        let ex_style = GetWindowLongPtrW(slint_hwnd, GWL_EXSTYLE);
+        let _ = SetWindowLongPtrW(
+            slint_hwnd,
+            GWL_EXSTYLE,
+            (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
+        );
+        let _ = SetWindowPos(
+            slint_hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            win_w,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let corner = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(
+            slint_hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const _,
+            std::mem::size_of_val(&corner) as u32,
+        );
+
+        // 安装窗口子类过程，捕获 WA_INACTIVE 失去焦点时自动隐藏
+        let _ = SetWindowSubclass(
+            slint_hwnd,
+            Some(slint_wnd_subclass_proc),
+            SLINT_SUBCLASS_ID,
+            0,
+        );
+    }
+
+    // 后台独立线程创建用于托盘和全局热键的无干扰消息窗口
+    let config_mgr_clone = config_mgr.clone();
+    let app_indexer_clone = app_indexer.clone();
+    let hotkey_str = cfg.general.hotkey.clone();
+
+    std::thread::spawn(move || unsafe {
+        let class_name = w!("OneLauncher_Tray_Msg_Class");
+        let hinstance = GetModuleHandleW(None).unwrap_or_default();
 
         let wc = WNDCLASSW {
-            lpfnWndProc: Some(launcher_wndproc),
+            lpfnWndProc: Some(msg_wnd_proc),
             hInstance: hinstance.into(),
-            lpszClassName: PCWSTR(class_name_w.as_ptr()),
+            lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
         };
+        let _ = RegisterClassW(&wc);
 
-        RegisterClassW(&wc);
-
-        let cfg = config_mgr.get();
-        let width = cfg.appearance.width as i32;
-
-        let hwnd = CreateWindowExW(
+        let msg_hwnd_res = CreateWindowExW(
             WS_EX_TOOLWINDOW,
-            PCWSTR(class_name_w.as_ptr()),
-            PCWSTR(HSTRING::from("OneLauncher").as_ptr()),
-            WS_POPUP,
+            class_name,
+            w!("OneLauncher_Tray_Msg_Window"),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(0),
             0,
             0,
-            width,
-            INPUT_HEIGHT,
-            HWND::default(),
+            0,
+            0,
+            HWND_MESSAGE,
             None,
             hinstance,
             None,
-        ).map_err(|e| format!("创建启动器窗口失败: {}", e))?;
-
-        // 启用 Windows 11 DWM 原生优雅圆角
-        let corner_preference = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &corner_preference as *const _ as _,
-            std::mem::size_of_val(&corner_preference) as u32,
         );
 
-        // 注册全局热键 (默认 Alt+Space)
-        if let Err(err) = register_global_hotkey(hwnd, &cfg.general.hotkey) {
-            warn!("初始热键注册提示: {}", err);
+        let msg_hwnd = match msg_hwnd_res {
+            Ok(h) => h,
+            Err(e) => {
+                error!("创建后台托盘消息窗口失败: {}", e);
+                return;
+            }
+        };
+
+        MSG_HWND_CONTAINER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .replace(msg_hwnd.0 as isize);
+
+        // 初始化系统托盘图标
+        let tray = match TrayIcon::create(msg_hwnd) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!("未能创建托盘图标: {}", e);
+                None
+            }
+        };
+
+        // 注册全局热键
+        if let Err(e) = register_global_hotkey(msg_hwnd, &hotkey_str) {
+            warn!("注册全局呼出热键 '{}' 提示: {}", hotkey_str, e);
         }
 
-        // 初始化窗口状态（包含系统托盘图标）
-        let state = Box::new(LauncherWindowState::new(
-            hwnd,
-            config_mgr,
-            app_indexer,
-            everything_client,
-        ));
+        let ctx = Box::new(TrayContext {
+            config_mgr: config_mgr_clone,
+            app_indexer: app_indexer_clone,
+            tray,
+        });
 
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        SetWindowLongPtrW(
+            msg_hwnd,
+            windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+            Box::into_raw(ctx) as isize,
+        );
 
-        info!("OneLauncher 核心引擎已就绪，系统托盘右键可管理配置，按下 Alt+Space 即可唤出！");
-
-        // 核心 Win32 消息循环
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    });
 
-        unregister_global_hotkey(hwnd);
-        let _ = DestroyWindow(hwnd);
-        Ok(())
+    // 当前检索条目的启动目标映射
+    let current_targets: Rc<RefCell<Vec<LaunchTarget>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // 初始化搜索结果：默认呈现常用系统应用
+    {
+        let initial_apps = app_indexer.search("", cfg.general.max_results);
+        let mut slint_items = Vec::with_capacity(initial_apps.len());
+        let mut targets = Vec::with_capacity(initial_apps.len());
+
+        for app in initial_apps {
+            let path_str = app.path.to_string_lossy().to_string();
+            let icon = get_icon_for_path(&path_str);
+            slint_items.push(SearchItemData {
+                title: SharedString::from(&app.name),
+                path: SharedString::from(&path_str),
+                badge: SharedString::from("应用"),
+                is_app: true,
+                is_folder: false,
+                has_icon: icon.is_some(),
+                icon: icon.unwrap_or_default(),
+            });
+            targets.push(LaunchTarget::App(app));
+        }
+
+        *current_targets.borrow_mut() = targets;
+        window.set_results(Rc::new(VecModel::from(slint_items)).into());
+        window.set_selected_index(0);
     }
+
+    // 1. 响应用户输入变化
+    {
+        let window_weak = window.as_weak();
+        let app_indexer = app_indexer.clone();
+        let everything_client = everything_client.clone();
+        let config_mgr = config_mgr.clone();
+        let current_targets = current_targets.clone();
+
+        window.on_text_changed(move |text| {
+            let cfg = config_mgr.get();
+            let query = text.trim();
+            let mut targets = Vec::new();
+            let mut slint_items = Vec::new();
+
+            if query.starts_with(&cfg.everything.prefix) {
+                // Everything 文件秒级搜索
+                let file_query = query[cfg.everything.prefix.len()..].trim();
+                if !file_query.is_empty() {
+                    match everything_client.search(file_query, cfg.everything.max_results as usize) {
+                        Ok(items) => {
+                            for item in items {
+                                let icon = get_icon_for_path(&item.path);
+                                let is_folder = item.is_folder;
+                                slint_items.push(SearchItemData {
+                                    title: SharedString::from(&item.name),
+                                    path: SharedString::from(&item.path),
+                                    badge: SharedString::from(if is_folder { "文件夹" } else { "Everything" }),
+                                    is_app: false,
+                                    is_folder,
+                                    has_icon: icon.is_some(),
+                                    icon: icon.unwrap_or_default(),
+                                });
+                                targets.push(LaunchTarget::File(item.full_path));
+                            }
+                        }
+                        Err(e) => {
+                            debug_assert!(true, "Everything 搜索异常: {}", e);
+                        }
+                    }
+                }
+            } else {
+                // 应用程序搜索（拼音首字母/英文缩写/全名模糊匹配）
+                let matched = app_indexer.search(query, cfg.general.max_results);
+                for app in matched {
+                    let path_str = app.path.to_string_lossy().to_string();
+                    let icon = get_icon_for_path(&path_str);
+                    slint_items.push(SearchItemData {
+                        title: SharedString::from(&app.name),
+                        path: SharedString::from(&path_str),
+                        badge: SharedString::from("应用"),
+                        is_app: true,
+                        is_folder: false,
+                        has_icon: icon.is_some(),
+                        icon: icon.unwrap_or_default(),
+                    });
+                    targets.push(LaunchTarget::App(app));
+                }
+            }
+
+            *current_targets.borrow_mut() = targets;
+            if let Some(win) = window_weak.upgrade() {
+                win.set_results(Rc::new(VecModel::from(slint_items)).into());
+                win.set_selected_index(0);
+            }
+        });
+    }
+
+    // 2. 响应回车启动或点击激活
+    {
+        let window_weak = window.as_weak();
+        let current_targets = current_targets.clone();
+
+        window.on_item_activated(move |idx| {
+            let target_opt = {
+                let targets = current_targets.borrow();
+                if idx >= 0 && (idx as usize) < targets.len() {
+                    Some(targets[idx as usize].clone())
+                } else {
+                    None
+                }
+            };
+
+            if let Some(target) = target_opt {
+                match target {
+                    LaunchTarget::App(app) => {
+                        if let Err(e) = AppIndexManager::launch(&app) {
+                            warn!("启动应用程序失败: {}", e);
+                        }
+                    }
+                    LaunchTarget::File(path) => {
+                        if let Err(e) = EverythingClient::open_file(&path) {
+                            warn!("打开目标文件失败: {}", e);
+                        }
+                    }
+                }
+
+                if let Some(win) = window_weak.upgrade() {
+                    let _ = win.hide();
+                    win.set_search_text(SharedString::new());
+                }
+            }
+        });
+    }
+
+    // 3. 响应 Esc 键关闭窗口
+    {
+        let window_weak = window.as_weak();
+        window.on_escape_pressed(move || {
+            if let Some(win) = window_weak.upgrade() {
+                let _ = win.hide();
+            }
+        });
+    }
+
+    info!("OneLauncher 现代化界面已成功就绪，等待热键唤出。");
+
+    // 初始显示一次并自动隐藏（让 Slint / Winit 完成 Win32 消息循环挂载）
+    let _ = window.show();
+    let _ = window.hide();
+
+    // 运行 Slint 事件循环直到退出
+    slint::run_event_loop()?;
+
+    // 退出时销毁后台托盘窗口
+    if let Some(lock) = MSG_HWND_CONTAINER.get() {
+        if let Some(msg_hwnd_val) = *lock.lock() {
+            unsafe {
+                let _ = DestroyWindow(HWND(msg_hwnd_val as *mut _));
+            }
+        }
+    }
+
+    info!("OneLauncher 进程已安全优雅退出。");
+    Ok(())
 }

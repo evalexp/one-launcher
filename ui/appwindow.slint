@@ -1,0 +1,267 @@
+import { ListView } from "std-widgets.slint";
+
+export struct SearchItemData {
+    title: string,
+    path: string,
+    badge: string,
+    is_app: bool,
+    is_folder: bool,
+    has_icon: bool,
+    icon: image,
+}
+
+export component AppWindow inherits Window {
+    title: "OneLauncher";
+    no-frame: true;
+    background: transparent;
+    default-font-family: "Segoe UI, Microsoft YaHei, sans-serif";
+
+    in property <[SearchItemData]> results: [];
+    in-out property <int> selected_index: 0;
+    in-out property <string> search_text <=> input.text;
+    in property <string> placeholder_text: "输入应用名称、简拼(如 wx) 或输入 fs: 搜索全盘文件...";
+    in property <int> window_width: 720;
+    property <length> list_height: Math.min(results.length, 8) * 56px;
+
+    callback text_changed(string);
+    callback item_activated(int);
+    callback escape_pressed();
+
+    width: window_width * 1px;
+    height: card.height;
+
+    forward-focus: input;
+
+    card := Rectangle {
+        width: 100%;
+        height: results.length > 0 ? (header.height + 1px + root.list_height + footer.height) : (header.height + footer.height);
+        background: #18181BEB;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: #27272A;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            // 顶部搜索区域
+            header := Rectangle {
+                height: 58px;
+
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 12px;
+                    alignment: center;
+
+                    // 放大镜图标
+                    Text {
+                        text: "🔍";
+                        font-size: 16px;
+                        vertical-alignment: center;
+                        color: #71717A;
+                    }
+
+                    // 核心输入框与占位符
+                    Rectangle {
+                        horizontal-stretch: 1;
+
+                        input := TextInput {
+                            width: 100%;
+                            height: 100%;
+                            text: "";
+                            font-size: 16px;
+                            color: #F4F4F5;
+                            selection-background-color: #3B82F6;
+                            vertical-alignment: center;
+
+                            edited => {
+                                root.text_changed(self.text);
+                            }
+
+                            key-pressed(event) => {
+                                if (event.text == Key.Escape) {
+                                    root.escape_pressed();
+                                    return accept;
+                                }
+                                if (event.text == Key.UpArrow) {
+                                    if (root.results.length > 0) {
+                                        if (root.selected_index <= 0) {
+                                            root.selected_index = root.results.length - 1;
+                                        } else {
+                                            root.selected_index = root.selected_index - 1;
+                                        }
+                                    }
+                                    return accept;
+                                }
+                                if (event.text == Key.DownArrow) {
+                                    if (root.results.length > 0) {
+                                        if (root.selected_index >= root.results.length - 1) {
+                                            root.selected_index = 0;
+                                        } else {
+                                            root.selected_index = root.selected_index + 1;
+                                        }
+                                    }
+                                    return accept;
+                                }
+                                if (event.text == Key.Return) {
+                                    root.item_activated(root.selected_index);
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+
+                        if input.text == "" : Text {
+                            text: root.placeholder_text;
+                            font-size: 15px;
+                            color: #52525B;
+                            vertical-alignment: center;
+                            x: 0px;
+                        }
+                    }
+                }
+            }
+
+            // 分割线
+            Rectangle {
+                height: 1px;
+                background: #27272A;
+            }
+
+            // 下方搜索结果列表
+            if results.length > 0 : results_container := Rectangle {
+                height: root.list_height;
+
+                ListView {
+                    for item[index] in root.results : Rectangle {
+                        height: 56px;
+                        background: index == root.selected_index ? #27272A : (touch.has-hover ? #202023 : transparent);
+                        border-radius: 8px;
+                        animate background { duration: 100ms; }
+
+                        touch := TouchArea {
+                            clicked => {
+                                root.selected_index = index;
+                                root.item_activated(index);
+                            }
+                            pointer-event(event) => {
+                                if (self.has-hover) {
+                                    root.selected_index = index;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 12px;
+                            alignment: center;
+
+                            // 1. 左侧：应用程序/文件专属图标 (像 uTools 一样)
+                            if item.has_icon : Image {
+                                source: item.icon;
+                                width: 32px;
+                                height: 32px;
+                                image-fit: contain;
+                                vertical-alignment: center;
+                            }
+
+                            if !item.has_icon : Rectangle {
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 6px;
+                                background: item.is_app ? #0284C726 : (item.is_folder ? #D9770626 : #10B98126);
+                                border-width: 1px;
+                                border-color: item.is_app ? #0284C766 : (item.is_folder ? #D9770666 : #10B98166);
+
+                                Text {
+                                    text: item.is_app ? "⚡" : (item.is_folder ? "📁" : "📄");
+                                    font-size: 16px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // 2. 中间：程序名字（上面）与具体路径（下面小字低色调灰色）
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: item.title;
+                                    font-size: 14px;
+                                    font-weight: index == root.selected_index ? 600 : 500;
+                                    color: index == root.selected_index ? #FFFFFF : #E4E4E7;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: item.path;
+                                    font-size: 11px;
+                                    color: index == root.selected_index ? #A1A1AA : #71717A;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // 3. 右侧：快捷键提示与类型徽章
+                            if index == root.selected_index : Text {
+                                text: "↵ 打开";
+                                font-size: 11px;
+                                color: #A1A1AA;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                width: 44px;
+                                height: 22px;
+                                border-radius: 4px;
+                                background: item.is_app ? #0284C71F : (item.is_folder ? #D977061F : #10B9811F);
+                                border-width: 1px;
+                                border-color: item.is_app ? #0284C74D : (item.is_folder ? #D977064D : #10B9814D);
+
+                                Text {
+                                    text: item.badge;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: item.is_app ? #38BDF8 : (item.is_folder ? #FBBF24 : #34D399);
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 底部操作状态微条
+            footer := Rectangle {
+                height: 28px;
+                background: #12121480;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+
+                    Text {
+                        text: results.length > 0 ? (results.length + " 个结果") : "就绪";
+                        font-size: 11px;
+                        color: #52525B;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { /* 弹性占位 */ }
+
+                    Text {
+                        text: "↑↓ 选择   ↵ 启动   Esc 隐藏";
+                        font-size: 11px;
+                        color: #52525B;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
