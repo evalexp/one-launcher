@@ -10,10 +10,8 @@ description = "A blazingly fast, lightweight launcher for Windows with Everythin
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 
-# 目录与文件系统监听
+# 目录
 dirs = "5.0"
-notify = "6.1"
-notify-debouncer-mini = "0.4"
 
 # 高性能并发通道与锁
 crossbeam-channel = "0.5"

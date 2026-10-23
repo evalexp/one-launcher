@@ -1,9 +1,7 @@
 pub mod model;
 pub mod template;
-pub mod watcher;
 
 pub use model::{AppearanceConfig, AppConfig, AppsConfig, EverythingConfig, GeneralConfig};
-pub use watcher::ConfigWatcher;
 
 use parking_lot::RwLock;
 use std::env;
@@ -21,7 +19,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
-/// 配置管理器，管理全局配置的生命周期、并发读写、文件持久化和热重载
+/// 配置管理器，管理全局配置的生命周期与手动重载
 #[derive(Clone)]
 pub struct ConfigManager {
     path: PathBuf,
@@ -34,7 +32,7 @@ impl ConfigManager {
         let path = Self::detect_config_path();
         Self::ensure_file_exists(&path)?;
 
-        let config = watcher::ConfigWatcher::read_config_from_file(&path)?;
+        let config = Self::read_config_from_file(&path)?;
         info!("成功加载配置文件: {:?}", path);
 
         Ok(Self {
@@ -53,24 +51,28 @@ impl ConfigManager {
         &self.path
     }
 
-    /// 启动后台热重载监听
-    pub fn start_watcher<F>(&self, on_change: F) -> Result<ConfigWatcher, String>
-    where
-        F: Fn(AppConfig) + Send + Sync + 'static,
-    {
-        let current_lock = self.current.clone();
-        let callback = move |new_config: AppConfig| {
-            {
-                let mut lock = current_lock.write();
-                *lock = new_config.clone();
-            }
-            on_change(new_config);
-        };
-
-        ConfigWatcher::watch(self.path.clone(), callback)
+    /// 手动从磁盘重新加载最新配置文件并替换当前状态
+    pub fn reload(&self) -> Result<AppConfig, String> {
+        info!("正在从磁盘重新读取配置文件: {:?}", self.path);
+        let new_config = Self::read_config_from_file(&self.path)?;
+        {
+            let mut lock = self.current.write();
+            *lock = new_config.clone();
+        }
+        info!("配置重载成功！");
+        Ok(new_config)
     }
 
-    /// 使用外部默认编辑器打开配置文件供用户编辑
+    /// 从指定磁盘路径读取并解析 TOML 配置
+    pub fn read_config_from_file(path: &Path) -> Result<AppConfig, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("读取文件失败 ({:?}): {}", path, e))?;
+
+        toml::from_str::<AppConfig>(&content)
+            .map_err(|e| format!("解析 TOML 语法失败: {}", e))
+    }
+
+    /// 使用系统外部默认编辑器打开配置文件供用户编辑
     pub fn open_in_editor(&self) -> Result<(), String> {
         info!("正在使用系统默认文本编辑器打开配置文件: {:?}", self.path);
 
@@ -93,7 +95,6 @@ impl ConfigManager {
                     SW_SHOW,
                 );
 
-                // ShellExecute 返回值大于 32 表示成功，否则表示错误码
                 let code = result.0 as usize;
                 if code <= 32 {
                     return Err(format!("打开编辑器失败，ShellExecute 错误码: {}", code));

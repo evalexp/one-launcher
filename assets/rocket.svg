@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <!-- 低饱和度高雅银灰渐变 -->
+    <linearGradient id="bodyMuted" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#D1D5DB"/>
+    </linearGradient>
+    <!-- 头部低饱和度雅致暗红点缀 -->
+    <linearGradient id="noseMuted" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E06C75"/>
+      <stop offset="100%" stop-color="#BE5046"/>
+    </linearGradient>
+    <!-- 机翼低饱和度冷灰蓝 -->
+    <linearGradient id="wingMuted" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94A3B8"/>
+      <stop offset="100%" stop-color="#64748B"/>
+    </linearGradient>
+    <!-- 柔和低调尾焰 -->
+    <linearGradient id="flameMuted" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE68A"/>
+      <stop offset="50%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#E11D48"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 整体火箭倾斜 -45 度，头偏向左上方 (center: 32, 32) -->
+  <g transform="rotate(-45 32 32)">
+    <!-- 柔和推进尾焰 -->
+    <path d="M28 47 C28 56, 32 60, 32 60 C32 60, 36 56, 36 47 Z" fill="url(#flameMuted)" opacity="0.85" />
+    <path d="M29.5 47 C29.5 53, 32 56, 32 56 C32 56, 34.5 53, 34.5 47 Z" fill="#FFFBEB" opacity="0.9" />
+
+    <!-- 侧机翼 (低饱和冷灰蓝) -->
+    <path d="M21 35 C15 38, 12 45, 12 47 C16 47, 21 44, 23 42 Z" fill="url(#wingMuted)" />
+    <path d="M43 35 C49 38, 52 45, 52 47 C48 47, 43 44, 41 42 Z" fill="url(#wingMuted)" />
+
+    <!-- 火箭主体 (柔和银白) -->
+    <path d="M32 8 C24 16, 22 27, 23 45 L41 45 C42 27, 40 16, 32 8 Z" fill="url(#bodyMuted)" />
+
+    <!-- 头部锥顶微红点缀 -->
+    <path d="M32 8 C28.5 12, 26 17, 25 20 L39 20 C38 17, 35.5 12, 32 8 Z" fill="url(#noseMuted)" />
+
+    <!-- 圆形舷窗 -->
+    <circle cx="32" cy="28" r="5" fill="#64748B" />
+    <circle cx="32" cy="28" r="3.5" fill="#E2E8F0" />
+    <circle cx="30.8" cy="26.8" r="1.2" fill="#FFFFFF" />
+  </g>
+</svg>

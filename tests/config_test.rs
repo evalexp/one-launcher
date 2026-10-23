@@ -1,5 +1,7 @@
 use one_launcher::config::model::AppConfig;
 use one_launcher::config::template::default_config_content;
+use one_launcher::config::ConfigManager;
+use std::fs;
 
 #[test]
 fn test_default_config_template_is_valid() {
@@ -32,40 +34,29 @@ fn test_partial_config_fallback_to_defaults() {
 }
 
 #[test]
-fn test_config_watcher_hot_reload() {
-    use one_launcher::config::watcher::ConfigWatcher;
-    use std::fs;
-    use std::sync::mpsc::channel;
-    use std::time::Duration;
-
-    let temp_dir = std::env::temp_dir().join(format!("one_launcher_test_{}", std::process::id()));
+fn test_manual_reload_config() {
+    let temp_dir = std::env::temp_dir().join(format!("one_launcher_reload_test_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let config_path = temp_dir.join("config.toml");
 
     // 初始写入
     fs::write(&config_path, default_config_content()).unwrap();
 
-    let (tx, rx) = channel();
-    let _watcher = ConfigWatcher::watch(config_path.clone(), move |new_cfg| {
-        let _ = tx.send(new_cfg);
-    }).expect("监听器应成功启动");
+    let initial = ConfigManager::read_config_from_file(&config_path).unwrap();
+    assert_eq!(initial.general.hotkey, "Alt+Space");
 
-    // 修改内容并保存
+    // 用户在外部编辑器修改后保存
     let modified = r#"
     [general]
-    hotkey = "Win+Space"
-    max_results = 15
+    hotkey = "Ctrl+Alt+Space"
+    max_results = 12
     "#;
-    std::thread::sleep(Duration::from_millis(50));
     fs::write(&config_path, modified).unwrap();
 
-    // 验证防抖后收到变更通知
-    let reloaded = rx.recv_timeout(Duration::from_secs(3))
-        .expect("应该在 3 秒内收到配置文件热重载通知");
+    // 手动调用重载
+    let reloaded = ConfigManager::read_config_from_file(&config_path).unwrap();
+    assert_eq!(reloaded.general.hotkey, "Ctrl+Alt+Space");
+    assert_eq!(reloaded.general.max_results, 12);
 
-    assert_eq!(reloaded.general.hotkey, "Win+Space");
-    assert_eq!(reloaded.general.max_results, 15);
-
-    // 清理临时文件
     let _ = fs::remove_dir_all(&temp_dir);
 }

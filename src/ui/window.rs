@@ -2,6 +2,9 @@ use crate::config::ConfigManager;
 use crate::everything::EverythingClient;
 use crate::hotkey::{register_global_hotkey, unregister_global_hotkey, DEFAULT_HOTKEY_ID};
 use crate::indexer::AppIndexManager;
+use crate::tray::{
+    TrayIcon, ID_TRAY_EDIT_CONFIG, ID_TRAY_EXIT, ID_TRAY_RELOAD_CONFIG, WM_TRAYICON,
+};
 use crate::ui::types::{SearchResultItem, SearchResultKind};
 use tracing::{info, warn};
 use windows::core::{HSTRING, PCWSTR};
@@ -22,8 +25,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowLongPtrW, IsWindowVisible, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA,
     HWND_TOPMOST, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, WA_INACTIVE,
-    WM_ACTIVATE, WM_CHAR, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_PAINT,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    WM_ACTIVATE, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const WINDOW_CLASS_NAME: &str = "OneLauncher_MainWindow_Class";
@@ -35,6 +38,7 @@ pub struct LauncherWindowState {
     config_mgr: ConfigManager,
     app_indexer: AppIndexManager,
     everything_client: EverythingClient,
+    tray: Option<TrayIcon>,
     query: String,
     results: Vec<SearchResultItem>,
     selected_index: usize,
@@ -50,11 +54,21 @@ impl LauncherWindowState {
     ) -> Self {
         let cfg = config_mgr.get();
         let width = cfg.appearance.width as i32;
+
+        let tray = match TrayIcon::create(hwnd) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!("未能初始化系统托盘图标: {}", e);
+                None
+            }
+        };
+
         let mut state = Self {
             hwnd,
             config_mgr,
             app_indexer,
             everything_client,
+            tray,
             query: String::new(),
             results: Vec::new(),
             selected_index: 0,
@@ -62,6 +76,33 @@ impl LauncherWindowState {
         };
         state.update_search();
         state
+    }
+
+    /// 手动重新加载配置（由托盘菜单触发）
+    pub fn reload_config(&mut self) {
+        match self.config_mgr.reload() {
+            Ok(new_cfg) => {
+                // 1. 重新注册全局热键（移除旧热键绑定并注册新键位）
+                if let Err(err) = register_global_hotkey(self.hwnd, &new_cfg.general.hotkey) {
+                    warn!("重新注册热键提示: {}", err);
+                }
+
+                // 2. 重新扫描系统应用程序目录
+                self.app_indexer.reload(&new_cfg.apps);
+
+                // 3. 更新界面参数
+                self.width = new_cfg.appearance.width as i32;
+                self.update_search();
+
+                unsafe {
+                    let _ = InvalidateRect(self.hwnd, None, false);
+                }
+                info!("OneLauncher 配置与热键已成功重载生效！");
+            }
+            Err(err) => {
+                warn!("重载配置失败: {}", err);
+            }
+        }
     }
 
     /// 执行搜索与数据聚合
@@ -72,12 +113,7 @@ impl LauncherWindowState {
 
         let mut items = Vec::new();
 
-        // 1. 若输入为 "config" 或 "setting"，提供快速打开配置文件条目
-        if q.eq_ignore_ascii_case("config") || q.eq_ignore_ascii_case("setting") {
-            items.push(SearchResultItem::open_config_action());
-        }
-
-        // 2. 检查是否命中 Everything 专属前缀
+        // 检查是否命中 Everything 专属前缀 (默认 "fs:")
         let prefix = &cfg.everything.prefix;
         let is_everything_prefix = !prefix.is_empty() && q.starts_with(prefix);
 
@@ -91,13 +127,13 @@ impl LauncherWindowState {
                 }
             }
         } else {
-            // 普通应用检索
+            // 普通系统应用程序模糊检索
             let matched_apps = self.app_indexer.search(&q, max_results);
             for app in matched_apps {
                 items.push(SearchResultItem::from_app(app));
             }
 
-            // 若 Everything 开启且为混合模式 (prefix 为空)
+            // 若 Everything 开启且处于混合模式 (prefix 为空)
             if cfg.everything.enabled && prefix.is_empty() && !q.is_empty() {
                 let remaining = max_results.saturating_sub(items.len());
                 if remaining > 0 {
@@ -179,9 +215,6 @@ impl LauncherWindowState {
                 SearchResultKind::Everything(file) => {
                     let _ = EverythingClient::open_file(&file.full_path);
                 }
-                SearchResultKind::OpenConfig => {
-                    let _ = self.config_mgr.open_in_editor();
-                }
             }
         }
 
@@ -219,6 +252,40 @@ unsafe extern "system" fn launcher_wndproc(
                     } else {
                         state.show();
                     }
+                }
+                return LRESULT(0);
+            }
+            WM_TRAYICON => {
+                let event = (lparam.0 & 0xFFFF) as u32;
+                if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
+                    if let Some(tray) = &state.tray {
+                        tray.show_context_menu();
+                    }
+                } else if event == WM_LBUTTONUP {
+                    let is_visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+                    if is_visible {
+                        state.hide();
+                    } else {
+                        state.show();
+                    }
+                }
+                return LRESULT(0);
+            }
+            WM_COMMAND => {
+                let cmd_id = (wparam.0 & 0xFFFF) as usize;
+                match cmd_id {
+                    ID_TRAY_EDIT_CONFIG => {
+                        let _ = state.config_mgr.open_in_editor();
+                    }
+                    ID_TRAY_RELOAD_CONFIG => {
+                        state.reload_config();
+                    }
+                    ID_TRAY_EXIT => {
+                        unsafe {
+                            let _ = DestroyWindow(hwnd);
+                        }
+                    }
+                    _ => {}
                 }
                 return LRESULT(0);
             }
@@ -514,31 +581,22 @@ pub fn run_launcher(
             std::mem::size_of_val(&corner_preference) as u32,
         );
 
-        // 初始化窗口状态
-        let state = Box::new(LauncherWindowState::new(
-            hwnd,
-            config_mgr.clone(),
-            app_indexer.clone(),
-            everything_client,
-        ));
-
         // 注册全局热键 (默认 Alt+Space)
         if let Err(err) = register_global_hotkey(hwnd, &cfg.general.hotkey) {
             warn!("初始热键注册提示: {}", err);
         }
 
-        // 启动配置文件热监听：当用户在外部编辑器保存 config.toml 时自动热重载生效！
-        let hwnd_raw = hwnd.0 as usize;
-        let _config_watcher = config_mgr.start_watcher(move |new_cfg| {
-            info!("收到新配置，正在热重载系统参数...");
-            let target_hwnd = HWND(hwnd_raw as *mut _);
-            let _ = register_global_hotkey(target_hwnd, &new_cfg.general.hotkey);
-            let _ = InvalidateRect(target_hwnd, None, false);
-        });
+        // 初始化窗口状态（包含系统托盘图标）
+        let state = Box::new(LauncherWindowState::new(
+            hwnd,
+            config_mgr,
+            app_indexer,
+            everything_client,
+        ));
 
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
-        info!("OneLauncher 核心引擎已就绪，按下 Alt+Space 即可唤出！");
+        info!("OneLauncher 核心引擎已就绪，系统托盘右键可管理配置，按下 Alt+Space 即可唤出！");
 
         // 核心 Win32 消息循环
         let mut msg = MSG::default();

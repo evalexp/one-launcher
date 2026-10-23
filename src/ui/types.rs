@@ -5,7 +5,6 @@ use crate::indexer::AppItem;
 pub enum SearchResultKind {
     App(AppItem),
     Everything(EverythingItem),
-    OpenConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -36,15 +35,6 @@ impl SearchResultItem {
             subtitle,
             badge,
             kind: SearchResultKind::Everything(item),
-        }
-    }
-
-    pub fn open_config_action() -> Self {
-        Self {
-            title: "编辑配置文件 (config.toml)".to_string(),
-            subtitle: "回车调用系统默认文本编辑器修改，保存后自动热重载".to_string(),
-            badge: "[配置]".to_string(),
-            kind: SearchResultKind::OpenConfig,
         }
     }
 }
