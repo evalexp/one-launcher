@@ -21,10 +21,6 @@ parking_lot = "0.12"
 pinyin = "0.10"
 fuzzy-matcher = "0.3"
 
-# 现代极简 UI 框架 Slint
-slint = { version = "1.18", features = ["raw-window-handle-06"] }
-raw-window-handle = "0.6"
-
 # 日志与跟踪
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -46,9 +42,6 @@ features = [
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
 ]
-
-[build-dependencies]
-slint-build = "1.18"
 
 [profile.release]
 opt-level = 3

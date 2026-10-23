@@ -6,7 +6,7 @@ fn test_icon_extraction_for_system_app() {
     let icon_opt = get_icon_for_path(explorer_path);
     assert!(
         icon_opt.is_some(),
-        "应能成功提取 Windows 资源管理器 (explorer.exe) 的图标"
+        "应能成功提取 Windows 资源管理器 (explorer.exe) 的 HICON 图标"
     );
 
     // 测试空路径返回 None
