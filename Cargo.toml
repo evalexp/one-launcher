@@ -1,0 +1,37 @@
+[package]
+name = "one-launcher"
+version = "0.1.0"
+edition = "2024"
+authors = ["Evalexp"]
+description = "A blazingly fast, lightweight launcher for Windows with Everything integration"
+
+[dependencies]
+# 序列化与配置
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# 目录与文件系统监听
+dirs = "5.0"
+notify = "6.1"
+notify-debouncer-mini = "0.4"
+
+# 高性能并发通道与锁
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+# 日志与跟踪
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Windows 原生 API 绑定
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_Storage_FileSystem",
+]
