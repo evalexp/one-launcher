@@ -224,8 +224,12 @@ impl PluginManager {
                     }
                 }
                 let _ = ctx.globals().set(format!("__plugin_{}_config", plugin_id), config_obj.clone());
+                if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
+                    let _ = launcher.set("config", config_obj.clone());
+                }
+                let _ = ctx.globals().set("config", config_obj.clone());
 
-                // 4. 执行插件 on_setup(context) 初始化生命周期 (如果已定义)
+                // 4. 执行插件 on_setup(context) 初始化生命周期 (收敛 context 为 cache_icon，其余由全局 launcher 提供)
                 if let Ok(setup_fn) = module.get::<_, Function>("on_setup") {
                     let setup_ctx = Object::new(ctx.clone()).unwrap();
 
@@ -240,60 +244,6 @@ impl PluginManager {
                     })
                     .unwrap();
                     setup_ctx.set("cache_icon", cache_icon_fn).unwrap();
-
-                    let cfg_clone = config_obj.clone();
-                    let get_config_fn = Function::new(ctx.clone(), move || Ok::<_, rquickjs::Error>(cfg_clone.clone())).unwrap();
-                    setup_ctx.set("get_plugin_config", get_config_fn).unwrap();
-
-                    let logger_obj = Object::new(ctx.clone()).unwrap();
-                    let id1 = plugin_id.clone();
-                    let id2 = plugin_id.clone();
-                    let id3 = plugin_id.clone();
-                    let id4 = plugin_id.clone();
-
-                    logger_obj
-                        .set(
-                            "info",
-                            Function::new(ctx.clone(), move |msg: String| {
-                                tracing::info!("[Plugin:{}] {}", id1, msg);
-                                Ok::<_, rquickjs::Error>(())
-                            })
-                            .unwrap(),
-                        )
-                        .unwrap();
-                    logger_obj
-                        .set(
-                            "warn",
-                            Function::new(ctx.clone(), move |msg: String| {
-                                tracing::warn!("[Plugin:{}] {}", id2, msg);
-                                Ok::<_, rquickjs::Error>(())
-                            })
-                            .unwrap(),
-                        )
-                        .unwrap();
-                    logger_obj
-                        .set(
-                            "error",
-                            Function::new(ctx.clone(), move |msg: String| {
-                                tracing::error!("[Plugin:{}] {}", id3, msg);
-                                Ok::<_, rquickjs::Error>(())
-                            })
-                            .unwrap(),
-                        )
-                        .unwrap();
-                    logger_obj
-                        .set(
-                            "debug",
-                            Function::new(ctx.clone(), move |msg: String| {
-                                tracing::debug!("[Plugin:{}] {}", id4, msg);
-                                Ok::<_, rquickjs::Error>(())
-                            })
-                            .unwrap(),
-                        )
-                        .unwrap();
-
-                    let get_logger_fn = Function::new(ctx.clone(), move || Ok::<_, rquickjs::Error>(logger_obj.clone())).unwrap();
-                    setup_ctx.set("get_logger", get_logger_fn).unwrap();
 
                     if let Err(e) = setup_fn.call::<_, ()>((setup_ctx,)) {
                         warn!("插件 [{}] 执行 on_setup 失败: {}", plugin_id, e);

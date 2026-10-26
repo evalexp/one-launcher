@@ -80,4 +80,9 @@ fn test_real_system_apps_scanning() {
     for app in apps.iter().take(5) {
         println!("- 扫描到应用: {} ({:?}) [简拼: {}]", app.name, app.path, app.pinyin_abbr);
     }
+
+    // 验证包含终端 (Windows Terminal / 终端)
+    let found_terminal = apps.iter().find(|a| a.name == "终端" || a.name == "Windows Terminal");
+    assert!(found_terminal.is_some(), "动态枚举中必须能扫描到终端应用");
+    println!("成功检索到终端应用: {:?}", found_terminal.unwrap().name);
 }

@@ -52,13 +52,15 @@ export const metadata = {
 ---
 
 ### 2. `export function on_setup(context)` (可选但推荐)
-插件被主程序加载时触发单次初始化。`context` 提供宿主运行环境与辅助能力：
+插件被主程序加载时触发单次初始化。
+
+> [!NOTE]
+> 运行日志输出器（`console` / `launcher.log`）与当前生效配置（`launcher.config`）均已通过全局 `launcher` 对象直接提供。
+> `on_setup` 中的 `context` 专注于**一次性执行重型或文件 I/O 初始化**（例如加载本地自定义图片/图标并写入主程序缓存），无需在每次查询时重复进行磁盘 I/O。
 
 | context 成员方法 | 说明 | 示例 |
 | :--- | :--- | :--- |
-| `cache_icon(bytes \| path)` | 将图标二进制字节（Uint8Array/ArrayBuffer）或相对路径缓存至程序内部，返回唯一的 `ref_id` | `const iconId = context.cache_icon("./icon.ico");` |
-| `get_plugin_config()` | 获取合并后的当前生效插件配置对象 | `const cfg = context.get_plugin_config();` |
-| `get_logger()` | 获取带插件前缀标识的运行时日志输出器 | `const logger = context.get_logger(); logger.info("Ready");` |
+| `cache_icon(bytes \| path)` | 将图标二进制字节（`Uint8Array` / `ArrayBuffer` / 数字数组）或相对/绝对路径缓存至程序内部，返回唯一的 `ref_id` | `const iconId = context.cache_icon("./icon.png");` |
 
 ---
 
@@ -81,17 +83,20 @@ export const metadata = {
 ```
 
 #### 内置预设图标引用 (无需打包图片即可开箱即用)：
-| 图标 ref_id | 视觉展示 |
+OneLauncher 内置了多款高辨识度的矢量/原生系统图标：
+
+| 图标 ref_id | 视觉展示说明 |
 | :--- | :--- |
-| `"file"` / `"doc"` | 系统原生文件图标 |
-| `"folder"` / `"dir"` | 系统原生文件夹图标 |
-| `"calc"` / `"calculator"` | 系统计算器应用图标 |
-| `"terminal"` / `"cmd"` | 系统命令提示符 / 终端图标 |
-| `"settings"` / `"config"` | 系统控制面板 / 设置图标 |
+| `"file"` / `"doc"` | 精心绘制的高辨识度文件白底折角文档图标（蓝文本条纹，与文件夹视觉明显区分） |
+| `"folder"` / `"dir"` | 温暖高亮琥珀黄文件夹图标（Tab 提手立体视觉） |
+| `"error"` | 醒目红色圆环 + 白色叉号 ❌ (异常与故障诊断状态) |
+| `"success"` | 亮绿色圆环 + 白色勾号 ✔ (操作成功/完成状态) |
+| `"warn"` / `"warning"` | Windows 标准警告三角黄标 ⚠ |
+| `"info"` | Windows 标准对话框信息蓝标 ℹ |
+| `"calc"` / `"calculator"` | 经典计算器外形图标 |
+| `"terminal"` / `"cmd"` | 现代深色终端控制台图标 |
+| `"settings"` / `"config"` | 系统齿轮控制面板图标 |
 | `"notepad"` / `"text"` | 系统记事本图标 |
-| `"info"` | Windows 标准对话框信息蓝标 (ℹ) |
-| `"warn"` / `"warning"` | Windows 标准警告黄标 (⚠) |
-| `"error"` | Windows 标准错误红标 (❌) |
 | `"shield"` | Windows UAC 安全盾牌图标 |
 
 ---
@@ -191,22 +196,15 @@ export const metadata = {
   }
 };
 
-let logger = null;
-let pluginConfig = null;
 let fileIconRef = "file";
 let folderIconRef = "folder";
 
 export function on_setup(context) {
-  logger = context.get_logger();
-  pluginConfig = context.get_plugin_config();
-
-  logger.info("Everything 插件正在初始化 (on_setup)...");
-
-  // 使用系统内置预设图标引用
+  // context 专用于一次性预存图标等重型IO (context.cache_icon)
   fileIconRef = "file";
   folderIconRef = "folder";
 
-  logger.info("Everything 插件初始化就绪");
+  console.info("Everything 插件初始化就绪 (on_setup)");
 }
 
 export function on_query(input) {
@@ -225,7 +223,7 @@ export function on_query(input) {
         id: "everything_not_running",
         title: "未检测到 Everything 正在运行",
         subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
-        icon: fileIconRef,
+        icon: "error", // 内置醒目错误红标
         payload: { action: "start_everything" },
       }];
     }
@@ -234,7 +232,7 @@ export function on_query(input) {
 
   // 2. 获取总结果数并读取配置项
   const total = native.Everything.Everything_GetNumResults();
-  const maxResults = (pluginConfig && pluginConfig.max_results) || 9;
+  const maxResults = (launcher.config && launcher.config.max_results) || 9;
   const count = Math.min(total, maxResults);
   const items = [];
 
@@ -293,17 +291,12 @@ export const metadata = {
   },
 };
 
-let logger = null;
-let pluginConfig = null;
 let calcIcon = "calc";
 
 export function on_setup(context) {
-  logger = context.get_logger();
-  pluginConfig = context.get_plugin_config();
-
-  // 使用内置计算器预设图标
+  // context 专用于一次性预存图标等重型IO (context.cache_icon)
   calcIcon = "calc";
-  logger.info(`Calculator 计算器初始化就绪，精度: ${pluginConfig.precision || 6}`);
+  console.info(`Calculator 计算器初始化就绪，精度: ${(launcher.config && launcher.config.precision) || 6}`);
 }
 
 export function on_query(input) {
@@ -312,7 +305,7 @@ export function on_query(input) {
   }
 
   const raw = input.trim();
-  const precision = (pluginConfig && pluginConfig.precision) || 6;
+  const precision = (launcher.config && launcher.config.precision) || 6;
   const result = evaluateMath(raw, precision);
 
   if (result === null) {
@@ -340,9 +333,7 @@ export function on_select(item) {
 
   const val = String(item.payload.result);
   launcher.clipboard.write_text(val);
-  if (logger) {
-    logger.info(`已成功复制计算结果 '${val}' 到剪贴板`);
-  }
+  console.info(`已成功复制计算结果 '${val}' 到剪贴板`);
 }
 
 function evaluateMath(rawExpr, precision) {

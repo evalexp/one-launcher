@@ -13,27 +13,18 @@ export const metadata = {
   },
 };
 
-let logger = null;
-let pluginConfig = null;
 let calcIcon = "calc";
 
 /**
  * 插件初始化生命周期
- * @param {Object} context 宿主初始化环境对象
+ * @param {Object} context 宿主初始化环境对象 (提供 context.cache_icon 用于一次性完成文件/图片IO缓存)
  * @param {Function} context.cache_icon (bytes|path) => ref_id 缓存自定义图标
- * @param {Function} context.get_plugin_config () => config 读取当前生效配置
- * @param {Function} context.get_logger () => logger 获取运行时日志输出器
  */
 export function on_setup(context) {
-  logger = context.get_logger();
-  pluginConfig = context.get_plugin_config();
-
-  logger.info("Calculator 计算器插件正在初始化 (on_setup)...");
-
-  // 使用宿主提供的内置预设图标 "calc" (亦支持 "terminal"、"settings"、"info"、"file" 等)
+  // 全局已注入 launcher.config 与 console，context 专用于预存图标等重型IO
   calcIcon = "calc";
 
-  logger.info(`Calculator 计算器插件初始化就绪，计算精度: ${pluginConfig.precision || 6}`);
+  console.info(`Calculator 计算器插件初始化就绪，计算精度: ${(launcher.config && launcher.config.precision) || 6}`);
 }
 
 /**
@@ -47,7 +38,7 @@ export function on_query(input) {
   }
 
   const raw = input.trim();
-  const precision = (pluginConfig && pluginConfig.precision) || 6;
+  const precision = (launcher.config && launcher.config.precision) || 6;
   const result = evaluateMath(raw, precision);
 
   if (result === null) {
@@ -80,9 +71,7 @@ export function on_select(item) {
   const val = String(item.payload.result);
   if (launcher && launcher.clipboard) {
     launcher.clipboard.write_text(val);
-    if (logger) {
-      logger.info(`已成功复制计算结果 '${val}' 到剪贴板`);
-    }
+    console.info(`已成功复制计算结果 '${val}' 到剪贴板`);
   }
 }
 

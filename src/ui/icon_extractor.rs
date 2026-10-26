@@ -11,13 +11,24 @@ use windows::Win32::UI::Shell::{
     SHGFI_ICON, SHGFI_LARGEICON, SIIGBF_RESIZETOFIT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateIconFromResourceEx, CreateIconIndirect, LoadIconW, HICON, ICONINFO, IDI_ASTERISK,
-    IDI_ERROR, IDI_EXCLAMATION, IDI_QUESTION, IDI_SHIELD, LR_DEFAULTCOLOR,
+    CreateIconFromResourceEx, CreateIconIndirect, LoadIconW, HICON, ICONINFO, IDI_SHIELD,
+    LR_DEFAULTCOLOR,
 };
+
+const ICON_PNG_FOLDER: &[u8] = include_bytes!("../../assets/icons/folder.png");
+const ICON_PNG_FILE: &[u8] = include_bytes!("../../assets/icons/file.png");
+const ICON_PNG_ERROR: &[u8] = include_bytes!("../../assets/icons/error.png");
+const ICON_PNG_SUCCESS: &[u8] = include_bytes!("../../assets/icons/success.png");
+const ICON_PNG_WARN: &[u8] = include_bytes!("../../assets/icons/warn.png");
+const ICON_PNG_INFO: &[u8] = include_bytes!("../../assets/icons/info.png");
 
 static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<isize>>>> = OnceLock::new();
 static FOLDER_ICON: OnceLock<Option<isize>> = OnceLock::new();
 static FILE_ICON: OnceLock<Option<isize>> = OnceLock::new();
+static ERROR_ICON: OnceLock<Option<isize>> = OnceLock::new();
+static SUCCESS_ICON: OnceLock<Option<isize>> = OnceLock::new();
+static WARN_ICON: OnceLock<Option<isize>> = OnceLock::new();
+static INFO_ICON: OnceLock<Option<isize>> = OnceLock::new();
 static ICON_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn get_cache() -> &'static Mutex<HashMap<String, Option<isize>>> {
@@ -34,14 +45,14 @@ pub fn get_icon_by_ref(ref_id: &str) -> Option<HICON> {
     match ref_id.to_lowercase().as_str() {
         "folder" | "dir" | "directory" => return get_folder_icon(),
         "file" | "doc" | "document" => return get_file_icon(),
+        "error" | "fail" | "failed" => return get_error_icon(),
+        "success" | "ok" | "done" => return get_success_icon(),
+        "warn" | "warning" | "alert" => return get_warn_icon(),
+        "info" | "hint" | "tip" => return get_info_icon(),
         "calc" | "calculator" => return get_icon_for_path(r"C:\Windows\System32\calc.exe").or_else(get_file_icon),
         "terminal" | "cmd" | "console" => return get_icon_for_path(r"C:\Windows\System32\cmd.exe").or_else(get_file_icon),
         "settings" | "config" => return get_icon_for_path(r"C:\Windows\System32\control.exe").or_else(get_file_icon),
         "notepad" | "text" | "edit" => return get_icon_for_path(r"C:\Windows\System32\notepad.exe").or_else(get_file_icon),
-        "info" => unsafe { return LoadIconW(None, IDI_ASTERISK).ok(); },
-        "warn" | "warning" => unsafe { return LoadIconW(None, IDI_EXCLAMATION).ok(); },
-        "error" => unsafe { return LoadIconW(None, IDI_ERROR).ok(); },
-        "question" => unsafe { return LoadIconW(None, IDI_QUESTION).ok(); },
         "shield" => unsafe { return LoadIconW(None, IDI_SHIELD).ok(); },
         _ => {}
     }
@@ -123,18 +134,62 @@ pub fn cache_icon_from_bytes(bytes: &[u8]) -> Option<String> {
     }
 }
 
-/// 获取全局常驻的通用文件夹图标 (零开销直读)
+/// 获取全局常驻的通用文件夹图标 (现代质感矢量黄金文件夹)
 pub fn get_folder_icon() -> Option<HICON> {
-    let icon_ptr = FOLDER_ICON.get_or_init(|| {
-        get_icon_for_path(r"C:\Windows").map(|h| h.0 as isize)
+    let icon_ptr = FOLDER_ICON.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(ICON_PNG_FOLDER, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR)
+            .ok()
+            .map(|h| h.0 as isize)
     });
     icon_ptr.map(|h| HICON(h as *mut _))
 }
 
-/// 获取全局常驻的通用普通文件图标 (零开销直读)
+/// 获取全局常驻的通用普通文件图标 (现代折角文档质感图标)
 pub fn get_file_icon() -> Option<HICON> {
-    let icon_ptr = FILE_ICON.get_or_init(|| {
-        get_icon_for_path(r"C:\Windows\explorer.exe").map(|h| h.0 as isize)
+    let icon_ptr = FILE_ICON.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(ICON_PNG_FILE, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR)
+            .ok()
+            .map(|h| h.0 as isize)
+    });
+    icon_ptr.map(|h| HICON(h as *mut _))
+}
+
+/// 获取内置错误警告红标图标 (32x32 红色圆形白色叉号)
+pub fn get_error_icon() -> Option<HICON> {
+    let icon_ptr = ERROR_ICON.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(ICON_PNG_ERROR, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR)
+            .ok()
+            .map(|h| h.0 as isize)
+    });
+    icon_ptr.map(|h| HICON(h as *mut _))
+}
+
+/// 获取内置成功完成绿标图标 (32x32 翡翠绿色圆形白色对勾)
+pub fn get_success_icon() -> Option<HICON> {
+    let icon_ptr = SUCCESS_ICON.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(ICON_PNG_SUCCESS, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR)
+            .ok()
+            .map(|h| h.0 as isize)
+    });
+    icon_ptr.map(|h| HICON(h as *mut _))
+}
+
+/// 获取内置警告提示黄标图标 (32x32 琥珀色感叹号)
+pub fn get_warn_icon() -> Option<HICON> {
+    let icon_ptr = WARN_ICON.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(ICON_PNG_WARN, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR)
+            .ok()
+            .map(|h| h.0 as isize)
+    });
+    icon_ptr.map(|h| HICON(h as *mut _))
+}
+
+/// 获取内置信息蓝标图标 (32x32 蓝色信息标志)
+pub fn get_info_icon() -> Option<HICON> {
+    let icon_ptr = INFO_ICON.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(ICON_PNG_INFO, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR)
+            .ok()
+            .map(|h| h.0 as isize)
     });
     icon_ptr.map(|h| HICON(h as *mut _))
 }

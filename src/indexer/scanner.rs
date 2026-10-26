@@ -5,6 +5,12 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::info;
+use windows::core::HSTRING;
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+use windows::Win32::UI::Shell::{
+    BHID_EnumItems, IEnumShellItems, IShellItem, SHCreateItemFromParsingName,
+    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
+};
 
 pub struct AppScanner;
 
@@ -29,7 +35,7 @@ impl AppScanner {
 
         // 3. 扫描 Windows UWP 应用
         if config.scan_uwp {
-            Self::scan_common_uwp_apps(&mut apps, &mut seen_names);
+            Self::scan_uwp_apps(config, &mut apps, &mut seen_names);
         }
 
         info!("系统应用程序扫描完毕，共发现有效启动项: {} 个", apps.len());
@@ -132,34 +138,72 @@ impl AppScanner {
         }
     }
 
-    /// 预置并扫描常见的 Windows 内置核心应用 (计算器、记事本、系统设置、任务管理器等)
-    fn scan_common_uwp_apps(apps: &mut Vec<AppItem>, seen: &mut HashSet<String>) {
-        let uwp_presets = [
-            ("计算器", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"),
-            ("Windows 设置", "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel"),
-            ("任务管理器", "Microsoft.Windows.TaskTaskManager_8wekyb3d8bbwe!App"),
-            ("截图工具", "Microsoft.ScreenSketch_8wekyb3d8bbwe!App"),
-            ("时钟", "Microsoft.WindowsAlarms_8wekyb3d8bbwe!App"),
-            ("画图", "Microsoft.Paint_8wekyb3d8bbwe!App"),
-            ("相机", "Microsoft.WindowsCamera_8wekyb3d8bbwe!App"),
-            ("Microsoft Store", "Microsoft.WindowsStore_8wekyb3d8bbwe!App"),
-        ];
+    /// 通过 Windows Shell AppsFolder 动态枚举已安装的系统与 UWP/MSIX 应用（如 Windows 终端、应用商店应用等）
+    fn scan_uwp_apps(config: &AppsConfig, apps: &mut Vec<AppItem>, seen: &mut HashSet<String>) {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let apps_folder_name = HSTRING::from("shell:AppsFolder");
+            if let Ok(folder_item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&apps_folder_name, None) {
+                if let Ok(enum_items) = folder_item.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) {
+                    let mut item_arr: [Option<IShellItem>; 32] = Default::default();
+                    loop {
+                        let mut fetched = 0;
+                        let res = enum_items.Next(&mut item_arr, Some(&mut fetched));
+                        if res.is_err() || fetched == 0 {
+                            break;
+                        }
 
-        for (name, aumid) in uwp_presets {
-            let key = name.to_lowercase();
-            if seen.contains(&key) {
-                continue;
+                        for j in 0..fetched as usize {
+                            if let Some(ref item) = item_arr[j] {
+                                let name = match item.GetDisplayName(SIGDN_NORMALDISPLAY) {
+                                    Ok(pw) => {
+                                        let s = pw.to_string().unwrap_or_default();
+                                        windows::Win32::System::Com::CoTaskMemFree(Some(pw.0 as *const _));
+                                        s
+                                    }
+                                    Err(_) => continue,
+                                };
+
+                                let aumid = match item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
+                                    Ok(pw) => {
+                                        let s = pw.to_string().unwrap_or_default();
+                                        windows::Win32::System::Com::CoTaskMemFree(Some(pw.0 as *const _));
+                                        s
+                                    }
+                                    Err(_) => continue,
+                                };
+
+                                if name.is_empty() || aumid.is_empty() {
+                                    continue;
+                                }
+
+                                // 排除黑名单检查
+                                let is_excluded = config.exclude_patterns.iter().any(|pattern| {
+                                    name.contains(pattern) || aumid.contains(pattern)
+                                });
+                                if is_excluded {
+                                    continue;
+                                }
+
+                                let key = name.to_lowercase();
+                                if seen.contains(&key) {
+                                    continue;
+                                }
+                                seen.insert(key);
+
+                                let (pinyin_full, pinyin_abbr) = generate_pinyin(&name);
+                                apps.push(AppItem::new_uwp(
+                                    name,
+                                    aumid,
+                                    "应用商店/系统应用".to_string(),
+                                    pinyin_full,
+                                    pinyin_abbr,
+                                ));
+                            }
+                        }
+                    }
+                }
             }
-            seen.insert(key);
-
-            let (pinyin_full, pinyin_abbr) = generate_pinyin(name);
-            apps.push(AppItem::new_uwp(
-                name.to_string(),
-                aumid.to_string(),
-                "系统内置应用".to_string(),
-                pinyin_full,
-                pinyin_abbr,
-            ));
         }
     }
 }

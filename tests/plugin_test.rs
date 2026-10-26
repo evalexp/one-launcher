@@ -26,9 +26,7 @@ fn test_plugin_strict_lifecycle_and_default_config() {
 
         export function on_setup(context) {
             setupCalled = true;
-            const logger = context.get_logger();
-            const config = context.get_plugin_config();
-            logger.info("on_setup 测试通过");
+            console.info("on_setup 测试通过, 当前 multiplier: " + (launcher.config && launcher.config.multiplier));
             testIconRef = "terminal";
         }
 

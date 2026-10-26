@@ -24,29 +24,20 @@ export const metadata = {
   }
 };
 
-let logger = null;
-let pluginConfig = null;
 let fileIconRef = "file";
 let folderIconRef = "folder";
 
 /**
  * 插件初始化生命周期
- * @param {Object} context 宿主初始化对象
+ * @param {Object} context 宿主初始化对象 (提供 context.cache_icon 用于一次性完成文件/图片IO缓存)
  * @param {Function} context.cache_icon (bytes|path) => ref_id 将图标缓存至程序内部并返回引用 ID
- * @param {Function} context.get_plugin_config () => config 获取插件当前生效的自定义配置
- * @param {Function} context.get_logger () => logger 获取运行时日志输出器
  */
 export function on_setup(context) {
-  logger = context.get_logger();
-  pluginConfig = context.get_plugin_config();
-
-  logger.info("Everything 插件正在初始化 (on_setup)...");
-
-  // 使用宿主内置的快速图标引用 ("file" / "folder")，亦可使用 context.cache_icon 缓存自定义图标
+  // 全局已注入 launcher.config 与 launcher.log / console，context 专用于高效预存图标等重型IO
   fileIconRef = "file";
   folderIconRef = "folder";
 
-  logger.info("Everything 插件初始化完成");
+  console.info("Everything 插件初始化就绪 (on_setup)");
 }
 
 /**
@@ -64,15 +55,13 @@ export function on_query(input) {
   const ok = native.Everything.Everything_QueryW(true);
   if (!ok) {
     const err = native.Everything.Everything_GetLastError();
-    if (logger) {
-      logger.warn(`Everything_QueryW 返回失败, GetLastError = ${err}`);
-    }
+    console.warn(`Everything_QueryW 返回失败, GetLastError = ${err}`);
     if (err === 2) {
       return [{
         id: "everything_not_running",
         title: "未检测到 Everything 正在运行",
         subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
-        icon: fileIconRef,
+        icon: "error", // 使用内置醒目红色错误图标
         payload: { action: "start_everything" },
       }];
     }
@@ -84,21 +73,19 @@ export function on_query(input) {
   if (total === 0) {
     const err = native.Everything.Everything_GetLastError();
     if (err === 2) {
-      if (logger) {
-        logger.warn("结果数为 0 且 GetLastError = 2 (IPC 错误，主程序未运行)");
-      }
+      console.warn("结果数为 0 且 GetLastError = 2 (IPC 错误，主程序未运行)");
       return [{
         id: "everything_not_running",
         title: "未检测到 Everything 正在运行",
         subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
-        icon: fileIconRef,
+        icon: "error", // 使用内置醒目红色错误图标
         payload: { action: "start_everything" },
       }];
     }
     return [];
   }
 
-  const maxResults = (pluginConfig && pluginConfig.max_results) || 9;
+  const maxResults = (launcher.config && launcher.config.max_results) || 9;
   const count = Math.min(total, maxResults);
   const items = [];
 
@@ -120,9 +107,7 @@ export function on_query(input) {
     });
   }
 
-  if (logger) {
-    logger.info(`搜索 '${input.trim()}' 命中 ${total} 条结果，当前展示 ${items.length} 条`);
-  }
+  console.info(`搜索 '${input.trim()}' 命中 ${total} 条结果，当前展示 ${items.length} 条`);
 
   return items;
 }
@@ -135,9 +120,7 @@ export function on_select(item) {
   if (!item) return;
 
   if (item.id === "everything_not_running" || (item.payload && item.payload.action === "start_everything")) {
-    if (logger) {
-      logger.info("用户触发了未运行提示，尝试拉起 Everything 客户端程序...");
-    }
+    console.info("用户触发了未运行提示，尝试拉起 Everything 客户端程序...");
     launcher.shell.open("everything.exe");
     return;
   }
