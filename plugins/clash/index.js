@@ -169,66 +169,73 @@ export function on_select(item) {
 
   switch (action) {
     case "update-subscription": {
-      const subUrl = getSubscriptionUrl();
-      if (!cfgPath) {
-        console.error("未找到环境变量 MIHOMO_CONFIG");
-        if (typeof launcher !== "undefined" && launcher.message_box) {
-          launcher.message_box("未找到环境变量 MIHOMO_CONFIG，请先在系统环境变量中设置配置文件路径。", "Clash 提示", "warn");
+      try {
+        const subUrl = getSubscriptionUrl();
+        if (!cfgPath) {
+          console.error("未找到环境变量 MIHOMO_CONFIG");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box("未找到环境变量 MIHOMO_CONFIG，请先在系统环境变量中设置配置文件路径。", "Clash 提示", "warn");
+          }
+          return;
         }
-        return;
-      }
-      if (!subUrl) {
-        console.error("未找到环境变量 SUBSCRIPTION_URL");
-        if (typeof launcher !== "undefined" && launcher.message_box) {
-          launcher.message_box("未找到环境变量 SUBSCRIPTION_URL，请先在系统环境变量中设置订阅地址。", "Clash 提示", "warn");
+        if (!subUrl) {
+          console.error("未找到环境变量 SUBSCRIPTION_URL");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box("未找到环境变量 SUBSCRIPTION_URL，请先在系统环境变量中设置订阅地址。", "Clash 提示", "warn");
+          }
+          return;
         }
-        return;
-      }
 
-      // 1. 备份现有配置
-      if (launcher.fs.exists(cfgPath)) {
-        const bakPath = cfgPath + ".bak";
-        launcher.fs.copy(cfgPath, bakPath, true);
-        console.info(`已备份配置文件至: ${bakPath}`);
-      }
-
-      // 2. 发起 HTTP 请求下载订阅
-      console.info(`正在请求订阅: ${subUrl}`);
-      const res = launcher.http.get(subUrl, { timeout_ms: 20000 });
-      if (!res.ok || !res.body) {
-        console.error(`下载订阅失败: HTTP ${res.status} ${res.status_text}`);
-        if (typeof launcher !== "undefined" && launcher.message_box) {
-          launcher.message_box(`下载订阅配置失败: HTTP ${res.status} ${res.status_text}`, "Clash 订阅更新失败", "error");
+        // 1. 备份现有配置
+        if (launcher.fs.exists(cfgPath)) {
+          const bakPath = cfgPath + ".bak";
+          launcher.fs.copy(cfgPath, bakPath, true);
+          console.info(`已备份配置文件至: ${bakPath}`);
         }
-        return;
-      }
-      launcher.fs.write(cfgPath, res.body);
-      console.info(`订阅内容已更新写入: ${cfgPath}`);
 
-      // 3. 通知 Mihomo 重载配置
-      const { port, secret } = getClashPortAndSecret();
-      const reloadUrl = `http://127.0.0.1:${port}/configs?force=true`;
-      console.info(`通知 Mihomo 重新载入配置: ${reloadUrl}`);
-      const reloadRes = launcher.http.request({
-        url: reloadUrl,
-        method: "PUT",
-        headers: {
-          "Authorization": "Bearer " + secret,
-          "Content-Type": "application/json"
-        },
-        body: "{}",
-        timeout_ms: 6000
-      });
-
-      if (reloadRes.ok) {
-        console.info("Mihomo 订阅更新并重载成功！");
-        if (typeof launcher !== "undefined" && launcher.message_box) {
-          launcher.message_box("Mihomo 订阅更新并重载成功！", "Clash 订阅更新", "info");
+        // 2. 发起 HTTP 请求下载订阅
+        console.info(`正在请求订阅: ${subUrl}`);
+        const res = launcher.http.get(subUrl, { timeout_ms: 20000 });
+        if (!res.ok || !res.body) {
+          console.error(`下载订阅失败: HTTP ${res.status} ${res.status_text}`);
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(`下载订阅配置失败: HTTP ${res.status} ${res.status_text}`, "Clash 订阅更新失败", "error");
+          }
+          return;
         }
-      } else {
-        console.warn(`Mihomo 重载请求完成: 状态 ${reloadRes.status} ${reloadRes.status_text}`);
+        launcher.fs.write(cfgPath, res.body);
+        console.info(`订阅内容已更新写入: ${cfgPath}`);
+
+        // 3. 通知 Mihomo 重载配置
+        const { port, secret } = getClashPortAndSecret();
+        const reloadUrl = `http://127.0.0.1:${port}/configs?force=true`;
+        console.info(`通知 Mihomo 重新载入配置: ${reloadUrl}`);
+        const reloadRes = launcher.http.request({
+          url: reloadUrl,
+          method: "PUT",
+          headers: {
+            "Authorization": "Bearer " + secret,
+            "Content-Type": "application/json"
+          },
+          body: "{}",
+          timeout_ms: 6000
+        });
+
+        if (reloadRes.ok) {
+          console.info("Mihomo 订阅更新并重载成功！");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box("Mihomo 订阅更新并重载成功！", "Clash 订阅更新", "info");
+          }
+        } else {
+          console.warn(`Mihomo 重载请求完成: 状态 ${reloadRes.status} ${reloadRes.status_text}`);
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(`订阅已更新保存，但 Mihomo 重载返回状态: ${reloadRes.status} ${reloadRes.status_text}`, "Clash 订阅提示", "warn");
+          }
+        }
+      } catch (err) {
+        console.error("更新订阅发生异常: " + err);
         if (typeof launcher !== "undefined" && launcher.message_box) {
-          launcher.message_box(`订阅已更新保存，但 Mihomo 重载返回状态: ${reloadRes.status} ${reloadRes.status_text}`, "Clash 订阅提示", "warn");
+          launcher.message_box(`更新订阅发生异常:\n${err}`, "Clash 订阅更新错误", "error");
         }
       }
       break;
@@ -243,24 +250,83 @@ export function on_select(item) {
     }
 
     case "enable-system-proxy": {
-      const mixed = getMixedPort();
-      if (!mixed) {
-        console.error("未能从配置文件中解析出 mixed-port");
-        return;
+      try {
+        const currentCfg = getMihomoConfigPath();
+        if (!currentCfg || !launcher.fs.exists(currentCfg)) {
+          const msg = "未找到 Mihomo 配置文件，无法读取代理端口。";
+          console.error(msg);
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(msg, "系统代理设置", "warn");
+          }
+          return;
+        }
+
+        const mixed = getMixedPort();
+        if (!mixed) {
+          const msg = "未能从配置文件中解析出 mixed-port，请检查 Mihomo 配置。";
+          console.error(msg);
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(msg, "系统代理设置", "warn");
+          }
+          return;
+        }
+
+        const proxyServer = `127.0.0.1:${mixed}`;
+        console.info("正在开启系统代理: " + proxyServer);
+
+        const r1 = launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f');
+        const r2 = launcher.shell.exec(`reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /t REG_SZ /d "${proxyServer}" /f`);
+        const r3 = launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyOverride /t REG_SZ /d "<local>" /f');
+
+        const ok1 = r1 && (r1.code === 0 || r1.success);
+        const ok2 = r2 && (r2.code === 0 || r2.success);
+        const ok3 = r3 && (r3.code === 0 || r3.success);
+
+        if (ok1 && ok2 && ok3) {
+          console.info("全局系统代理已开启！");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(`全局系统代理已开启！\n代理地址: ${proxyServer}`, "系统代理设置", "info");
+          }
+        } else {
+          const errMsg = [r1 && r1.stderr, r2 && r2.stderr, r3 && r3.stderr].filter(Boolean).join("\n") || "注册表写入失败";
+          console.error("开启系统代理失败: " + errMsg);
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(`开启系统代理失败:\n${errMsg}`, "系统代理设置", "error");
+          }
+        }
+      } catch (err) {
+        console.error("开启系统代理发生异常: " + err);
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box(`开启系统代理发生异常:\n${err}`, "系统代理设置", "error");
+        }
       }
-      const proxyServer = `127.0.0.1:${mixed}`;
-      console.info("正在开启系统代理: " + proxyServer);
-      launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f');
-      launcher.shell.exec(`reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /t REG_SZ /d "${proxyServer}" /f`);
-      launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyOverride /t REG_SZ /d "<local>" /f');
-      console.info("全局系统代理已开启！");
       break;
     }
 
     case "disable-system-proxy": {
-      console.info("正在关闭系统代理...");
-      launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f');
-      console.info("全局系统代理已关闭！");
+      try {
+        console.info("正在关闭系统代理...");
+        const res = launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f');
+        const ok = res && (res.code === 0 || res.success);
+
+        if (ok) {
+          console.info("全局系统代理已关闭！");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box("全局系统代理已成功关闭！", "系统代理设置", "info");
+          }
+        } else {
+          const errMsg = (res && res.stderr) || "注册表修改失败";
+          console.error("关闭系统代理失败: " + errMsg);
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box(`关闭系统代理失败:\n${errMsg}`, "系统代理设置", "error");
+          }
+        }
+      } catch (err) {
+        console.error("关闭系统代理发生异常: " + err);
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box(`关闭系统代理发生异常:\n${err}`, "系统代理设置", "error");
+        }
+      }
       break;
     }
 

@@ -84,8 +84,10 @@ secret: "test_secret_123"
     assert_eq!(sub_items.len(), 1);
     assert_eq!(sub_items[0].id, "subscription-time");
 
-    // 7. 测试 on_select 触发 (例如 subscription-time)
+    // 7. 测试 on_select 触发 (例如 subscription-time, enable-system-proxy, disable-system-proxy)
     pm.select("clash", "subscription-time", r#"{"action":"subscription-time"}"#);
+    pm.select("clash", "enable-system-proxy", r#"{"action":"enable-system-proxy"}"#);
+    pm.select("clash", "disable-system-proxy", r#"{"action":"disable-system-proxy"}"#);
 
     // 清理临时文件与环境变量
     unsafe {
