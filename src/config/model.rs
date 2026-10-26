@@ -151,17 +151,17 @@ fn default_entry() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
-    /// 日志记录级别: "trace", "debug", "info", "warn", "error" (默认: "info")
+    /// 日志记录级别: "trace", "debug", "info", "warn", "error", "silent" (默认: "info")
     pub level: String,
-    /// 日志文件输出路径 (支持相对路径或绝对路径，默认: "logs/one-launcher.log")
-    pub path: PathBuf,
+    /// 日志输出目标: "std" (输出至终端) 或 "fs:<path>" (输出至指定文件，如 "fs:logs/one-launcher.log")
+    pub path: String,
 }
 
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
             level: "info".to_string(),
-            path: PathBuf::from("logs/one-launcher.log"),
+            path: "fs:logs/one-launcher.log".to_string(),
         }
     }
 }

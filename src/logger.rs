@@ -9,15 +9,23 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-/// 线程安全的多路写入器：同时写入标准输出（若存在控制台终端）与目标日志文件
+/// 日志输出目标类型
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogDestination {
+    /// 终端标准输出
+    Std,
+    /// 磁盘文件存储
+    File(PathBuf),
+}
+
+/// 线程安全的文件写入器
 #[derive(Clone)]
-pub struct DualLogWriter {
+pub struct FileLogWriter {
     file: Arc<Mutex<fs::File>>,
 }
 
-impl Write for DualLogWriter {
+impl Write for FileLogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::stdout().write(buf);
         if let Ok(mut f) = self.file.lock() {
             let _ = f.write_all(buf);
         }
@@ -25,7 +33,6 @@ impl Write for DualLogWriter {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::stdout().flush();
         if let Ok(mut f) = self.file.lock() {
             let _ = f.flush();
         }
@@ -33,67 +40,107 @@ impl Write for DualLogWriter {
     }
 }
 
-/// 解析日志文件的绝对物理路径
-pub fn resolve_log_path(config_path: &Path, log_path_setting: &Path) -> PathBuf {
-    let mut resolved = if log_path_setting.is_absolute() {
-        log_path_setting.to_path_buf()
-    } else if let Some(config_dir) = config_path.parent() {
-        config_dir.join(log_path_setting)
+/// 解析日志目标配置（支持 "std" 终端输出与 "fs:<path>" 磁盘文件输出）
+pub fn parse_log_destination(config_path: &Path, raw_path: &str) -> LogDestination {
+    let trimmed = raw_path.trim();
+    if trimmed.eq_ignore_ascii_case("std") || trimmed.eq_ignore_ascii_case("stdout") {
+        LogDestination::Std
     } else {
-        log_path_setting.to_path_buf()
-    };
+        let file_path_str = if let Some(stripped) = trimmed.strip_prefix("fs:") {
+            stripped.trim()
+        } else {
+            trimmed
+        };
 
-    // 若配置的路径是目录或无后缀名，自动追加默认日志文件名
-    if resolved.is_dir() || resolved.extension().is_none() {
-        resolved = resolved.join("one-launcher.log");
+        let p = Path::new(file_path_str);
+        let mut resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else if let Some(config_dir) = config_path.parent() {
+            config_dir.join(p)
+        } else {
+            p.to_path_buf()
+        };
+
+        // 若给定的路径为目录或未携带扩展名，自动追加默认文件名
+        if resolved.is_dir() || resolved.extension().is_none() {
+            resolved = resolved.join("one-launcher.log");
+        }
+
+        LogDestination::File(resolved)
     }
-
-    resolved
 }
 
 /// 初始化全局日志记录器
-pub fn init_logger(config: &LogConfig, config_file_path: &Path) -> Result<PathBuf, String> {
-    let log_file_path = resolve_log_path(config_file_path, &config.path);
+pub fn init_logger(config: &LogConfig, config_file_path: &Path) -> Result<LogDestination, String> {
+    let destination = parse_log_destination(config_file_path, &config.path);
+    let is_silent = config.level.trim().eq_ignore_ascii_case("silent")
+        || config.level.trim().eq_ignore_ascii_case("off");
 
-    if let Some(parent) = log_file_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("创建日志目录失败 ({:?}): {}", parent, e))?;
-        }
+    if is_silent {
+        // 静默模式：设置日志过滤为 off，完全不输出任何事件
+        let subscriber = tracing_subscriber::registry().with(EnvFilter::new("off"));
+        let _ = subscriber.try_init();
+        return Ok(destination);
     }
-
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(true)
-        .open(&log_file_path)
-        .map_err(|e| format!("打开或创建日志文件失败 ({:?}): {}", log_file_path, e))?;
-
-    let dual_writer = DualLogWriter {
-        file: Arc::new(Mutex::new(file)),
-    };
 
     let env_filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(&config.level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let subscriber = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(
-            fmt::layer()
-                .with_writer(move || dual_writer.clone())
-                .with_ansi(false)
-                .with_target(true)
-                .with_thread_ids(true),
-        );
+    match destination {
+        LogDestination::Std => {
+            let subscriber = tracing_subscriber::registry()
+                .with(env_filter)
+                .with(
+                    fmt::layer()
+                        .with_writer(std::io::stdout)
+                        .with_ansi(true)
+                        .with_target(true)
+                        .with_thread_ids(true),
+                );
 
-    // 在多线程或单元测试环境下，允许安全地重复尝试注入 Subscriber
-    let _ = subscriber.try_init();
+            let _ = subscriber.try_init();
+            info!(
+                "日志系统初始化就绪，输出目标: 终端控制台 (std)，过滤级别: '{}'",
+                config.level
+            );
+        }
+        LogDestination::File(ref log_file_path) => {
+            if let Some(parent) = log_file_path.parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("创建日志目录失败 ({:?}): {}", parent, e))?;
+                }
+            }
 
-    info!(
-        "日志系统初始化就绪，日志级别: '{}', 日志输出路径: {:?}",
-        config.level, log_file_path
-    );
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(log_file_path)
+                .map_err(|e| format!("打开或创建日志文件失败 ({:?}): {}", log_file_path, e))?;
 
-    Ok(log_file_path)
+            let file_writer = FileLogWriter {
+                file: Arc::new(Mutex::new(file)),
+            };
+
+            let subscriber = tracing_subscriber::registry()
+                .with(env_filter)
+                .with(
+                    fmt::layer()
+                        .with_writer(move || file_writer.clone())
+                        .with_ansi(false)
+                        .with_target(true)
+                        .with_thread_ids(true),
+                );
+
+            let _ = subscriber.try_init();
+            info!(
+                "日志系统初始化就绪，输出目标: {:?}，过滤级别: '{}'",
+                log_file_path, config.level
+            );
+        }
+    }
+
+    Ok(destination)
 }
