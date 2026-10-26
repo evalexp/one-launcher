@@ -44,6 +44,8 @@ features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
+    "Win32_Networking_WinHttp",
+    "Win32_Globalization",
 ]
 
 [profile.release]

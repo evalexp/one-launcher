@@ -1,4 +1,7 @@
 pub mod dynamic_lib;
+pub mod host_fs;
+pub mod host_http;
+pub mod host_process;
 pub mod model;
 
 use crate::config::PluginConfig;
@@ -81,7 +84,16 @@ impl PluginManager {
             })
             .unwrap();
             shell.set("open", open_fn).unwrap();
+
+            // 注册命令行与外部进程能力 (launcher.shell.exec / spawn 与 launcher.process)
+            let _ = host_process::register_process(&ctx, &launcher, &shell);
             launcher.set("shell", shell).unwrap();
+
+            // 注册原生文件系统操作能力 (launcher.fs)
+            let _ = host_fs::register_fs(&ctx, &launcher);
+
+            // 注册原生 HTTP 网络请求能力 (launcher.http 与 fetch)
+            let _ = host_http::register_http(&ctx, &launcher);
 
             // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
             let copy_fn = Function::new(ctx.clone(), |text: String| {

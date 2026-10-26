@@ -53,27 +53,18 @@ impl Default for GeneralConfig {
     }
 }
 
-/// 外观与视觉效果配置
+/// 外观与尺寸配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
-    /// 主题模式: "system" (跟随系统), "dark" (暗色), "light" (亮色)
-    pub theme: String,
     /// 启动器窗口宽度 (像素)
     pub width: u32,
-    /// 字体大小 (像素)
-    pub font_size: u32,
-    /// 背景特效: "mica" (Windows 11 云母), "acrylic" (亚克力), "solid" (纯色)
-    pub backdrop_effect: String,
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
-            theme: "system".to_string(),
             width: 680,
-            font_size: 16,
-            backdrop_effect: "mica".to_string(),
         }
     }
 }

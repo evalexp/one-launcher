@@ -12,7 +12,7 @@ fn test_default_config_template_is_valid() {
     let config = parsed.unwrap();
     assert_eq!(config.general.hotkey, "Alt+Space");
     assert!(config.general.hide_on_blur);
-    assert_eq!(config.appearance.backdrop_effect, "mica");
+    assert_eq!(config.appearance.width, 680);
     assert!(config.apps.scan_uwp);
     
     // 验证日志配置

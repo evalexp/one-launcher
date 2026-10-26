@@ -16,14 +16,8 @@ max_results = 8
 plugin_debounce_ms = 100
 
 [appearance]
-# 主题模式: "system" (跟随系统), "dark" (深色), "light" (浅色)
-theme = "system"
-# 启动器宽度 (像素)
+# 启动器窗口宽度 (像素，最小为 500)
 width = 680
-# 字体大小 (像素)
-font_size = 16
-# 背景视觉效果: "mica" (云母), "acrylic" (亚克力), "solid" (纯色)
-backdrop_effect = "mica"
 
 [apps]
 # 应用程序扫描的后缀名单

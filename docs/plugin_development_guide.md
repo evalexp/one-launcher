@@ -119,10 +119,11 @@ export function on_setup(context) {
 
 OneLauncher 在插件上下文中注入了全局对象，供插件随时调用。
 
-### 1. `launcher.shell`
-提供系统外壳操作接口。
+### 1. `launcher.shell` 与 `launcher.process`
+提供系统外壳操作、控制台命令执行与外部子进程管理接口。
+
 - **`launcher.shell.open(targetPath: string): void`**
-  - 使用 Windows 默认关联程序打开目标路径、启动 `.exe`、打开目录或在默认浏览器中打开网址。
+  - 使用 Windows 默认关联程序打开目标路径、启动可执行程序、打开目录或在默认浏览器中打开网址。
   - 示例：
     ```javascript
     launcher.shell.open("https://github.com");
@@ -130,7 +131,154 @@ OneLauncher 在插件上下文中注入了全局对象，供插件随时调用�
     launcher.shell.open("D:\\Documents");
     ```
 
-### 2. `launcher.clipboard`
+- **`launcher.shell.exec(command: string, options?: ExecOptions): ExecResult`**（别名：`launcher.process.exec`）
+  - 同步执行外部命令或程序，默认启用 `CREATE_NO_WINDOW`（绝无控制台黑框弹窗闪烁），并具备 UTF-8 与中文系统 GBK/ANSI 智能自动解码兼容。
+  - **参数**：
+    - `command: string`：待执行的命令或程序路径；
+    - `options?: { args?: string[], cwd?: string, env?: Record<string, string>, shell?: boolean }`
+      - `args`：当指定时直接启动程序并传入参数列表（无需经过 cmd 解析）；
+      - `cwd`：工作目录路径；
+      - `env`：自定义环境变量；
+      - `shell`：是否通过 `cmd.exe /C` 执行（默认如果未指定 `args` 则为 `true`）。
+  - **返回值 `ExecResult`**：
+    ```javascript
+    {
+      code: 0,              // 进程退出码
+      stdout: "输出文本",    // 标准输出（已解码为字符串）
+      stderr: "",           // 标准错误
+      success: true         // code === 0
+    }
+    ```
+  - 示例：
+    ```javascript
+    // 方式 A：直接运行系统命令行命令
+    const res = launcher.shell.exec("ipconfig /all");
+    if (res.success) {
+      console.log(res.stdout);
+    }
+
+    // 方式 B：传参执行外部工具程序
+    const gitRes = launcher.shell.exec("git.exe", {
+      args: ["status", "--porcelain"],
+      cwd: "D:\\projects\\repo"
+    });
+    ```
+
+- **`launcher.shell.spawn(command: string, args?: string[]): boolean`**（别名：`launcher.process.spawn`）
+  - 脱机在后台启动外部子进程（无需等待其执行结束退出），返回是否成功拉起。
+  - 示例：
+    ```javascript
+    launcher.shell.spawn("calc.exe");
+    ```
+
+---
+
+### 2. `launcher.fs` (原生文件系统操作)
+提供丰富、高性能的底层系统级文件与目录操作接口，读写支持原始二进制缓冲区与文本，复制移动直接调用 Windows Win32 原生 API。
+
+- **`launcher.fs.read(path: string): ArrayBuffer | null`**
+  - 读取指定文件的原始二进制字节流，返回标准 `ArrayBuffer`。文件不存在或读取失败时返回 `null`。
+  - 示例：
+    ```javascript
+    const buffer = launcher.fs.read("D:\\data.bin");
+    if (buffer) {
+      const bytes = new Uint8Array(buffer);
+      console.log("第一个字节:", bytes[0]);
+    }
+    ```
+
+- **`launcher.fs.read_text(path: string): string | null`**
+  - 读取文件并按 UTF-8 解码为文本字符串。
+  - 示例：
+    ```javascript
+    const content = launcher.fs.read_text("D:\\notes.txt");
+    ```
+
+- **`launcher.fs.write(path: string, data: string | ArrayBuffer | Uint8Array): boolean`**（别名：`write_file`, `write_text`）
+  - 写入数据至指定文件，支持传入字符串、`ArrayBuffer` 或 `Uint8Array` 等类型化数组；若父目录不存在会自动递归创建。
+  - 示例：
+    ```javascript
+    // 写入文本
+    launcher.fs.write("D:\\temp\\log.txt", "Hello World");
+
+    // 写入二进制字节
+    const binData = new Uint8Array([0x89, 0x50, 0x4E, 0x47]);
+    launcher.fs.write("D:\\temp\\icon.png", binData);
+    ```
+
+- **`launcher.fs.append(path: string, data: string | ArrayBuffer | Uint8Array): boolean`**（别名：`append_text`）
+  - 向文件末尾追加文本或二进制内容。
+
+- **`launcher.fs.copy(src: string, dst: string, overwrite: boolean = true): boolean`**
+  - 调用 Windows 原生 `CopyFileW` 快速复制文件，自动创建目标父目录。
+
+- **`launcher.fs.move(src: string, dst: string, overwrite: boolean = true): boolean`**
+  - 调用 Windows 原生 `MoveFileExW` 快速重命名/跨卷移动文件。
+
+- **`launcher.fs.remove(path: string): boolean`**（别名：`delete`）
+  - 删除文件或递归清空删除文件夹。
+
+- **`launcher.fs.mkdir(path: string): boolean`**
+  - 递归创建目录（等同于 `mkdir -p`）。
+
+- **`launcher.fs.exists(path: string): boolean`**
+  - 校验路径或文件是否存在。
+
+- **`launcher.fs.list(path: string): Array<{ name, path, is_dir, is_file, size }> | null`**（别名：`read_dir`）
+  - 列举目标目录下所有的直接子条目元数据。
+
+- **`launcher.fs.stat(path: string): { is_dir: boolean, is_file: boolean, size: number, modified_ms: number } | null`**
+  - 获取指定路径的属性与修改时间戳。
+
+---
+
+### 3. `launcher.http` 与全局 `fetch` (Windows 原生 WinHttp 网络操作)
+基于 Windows 原生系统级 `WinHttp` 网络栈构建，零额外打包体积膨胀，原生继承 Windows 系统的受信任根证书库与系统代理设置，完美支持 HTTP/HTTPS。
+
+- **`launcher.http.get(url: string, options?: RequestOptions): Response`**
+- **`launcher.http.post(url: string, body?: string | ArrayBuffer | Uint8Array, options?: RequestOptions): Response`**
+- **`launcher.http.request(options: FullRequestOptions): Response`**
+- **`launcher.fetch(url: string, options?: RequestOptions): Response`**（全局亦挂载标准别名 `fetch`）
+
+#### `Response` 响应对象字段：
+```javascript
+{
+  status: 200,            // HTTP 状态码 (number)
+  status_text: "OK",      // 状态文本说明 (string)
+  ok: true,               // 是否成功 (status >= 200 && status < 300)
+  headers: {              // 响应头映射字典 (全部小写键名)
+    "content-type": "application/json",
+    ...
+  },
+  body: "...",            // 响应文本正文 (UTF-8 string)
+  buffer: ArrayBuffer,    // 原始响应二进制字节流
+  json: () => any         // 便捷方法：以 JSON 格式解析 body 并返回 JS 对象
+}
+```
+
+#### 示例：
+```javascript
+// 发起 GET 请求并解析 JSON
+const res = launcher.http.get("https://api.github.com/zen");
+if (res.ok) {
+  console.log("GitHub Zen:", res.body);
+}
+
+// 使用 fetch 别名与 POST 数据
+const apiRes = launcher.fetch("https://httpbin.org/post", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ query: input })
+});
+if (apiRes.ok) {
+  const data = apiRes.json();
+  console.log("响应数据:", data);
+}
+```
+
+---
+
+### 4. `launcher.clipboard`
 提供系统剪贴板原生操作接口。
 - **`launcher.clipboard.write_text(text: string): boolean`**（别名：`launcher.clipboard.write`）
   - 以 UTF-16 原生格式将文本安全写入 Windows 系统剪贴板。
@@ -139,7 +287,9 @@ OneLauncher 在插件上下文中注入了全局对象，供插件随时调用�
     launcher.clipboard.write_text("42");
     ```
 
-### 3. `launcher.config`
+---
+
+### 5. `launcher.config`
 当前插件生效的配置快照对象。
 - 在插件加载时，主程序将 `metadata.default_config` 与用户 `config.toml` 中 `[plugins.<id>.config]` 对应项合并后注入该对象；
 - 同时在全局作用域注入别名 `config`，支持 `launcher.config.xxx` 或 `config.xxx` 访问。
@@ -148,7 +298,9 @@ OneLauncher 在插件上下文中注入了全局对象，供插件随时调用�
   const precision = (launcher.config && launcher.config.precision) || 6;
   ```
 
-### 4. `launcher.log` 与全局 `console`
+---
+
+### 6. `launcher.log` 与全局 `console`
 提供运行时日志输出，日志输出目标根据主程序 `config.toml` 中的 `[log]` 设置（控制台或本地日志文件）：
 - `launcher.log.info(msg: string)`
 - `launcher.log.warn(msg: string)`
@@ -161,7 +313,9 @@ OneLauncher 在插件上下文中注入了全局对象，供插件随时调用�
 - `console.error(...)`（映射为 ERROR 等级）
 - `console.debug(...)`（映射为 DEBUG 等级）
 
-### 5. 全局 `native` 对象
+---
+
+### 7. 全局 `native` 对象
 当插件声明了 `metadata.dynamic_library` 时，各动态库导出的 C 函数会自动挂载至全局 `native.<LibName>.<SymbolName>` 下，支持在 JS 中直接同步调用。
 
 ---
