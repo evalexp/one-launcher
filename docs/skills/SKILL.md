@@ -40,13 +40,22 @@ plugins/<plugin-id>/
 ```toml
 [plugins.<plugin-id>]
 enabled = true
+# path 为可选字段：默认指向 "plugins/<plugin-id>"；仅当存放于自定义目录时需显式指定
+# path = "plugins/<plugin-id>"
+# prefix 与 name 为可选字段：若未指定则自动从插件 index.js 的 metadata 声明中读取回退
 prefix = "myprefix:"
 name = "我的插件名称"
-path = "plugins/<plugin-id>"
+# entry 为可选字段：默认为 "index.js"
 entry = "index.js"
 
 [plugins.<plugin-id>.config]
 custom_field = "custom_value"
+```
+
+因此，对于标准插件目录，最简注册只需：
+```toml
+[plugins.my_plugin]
+enabled = true
 ```
 
 ---

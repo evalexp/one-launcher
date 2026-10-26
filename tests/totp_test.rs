@@ -1,7 +1,6 @@
 use one_launcher::config::model::PluginConfig;
 use one_launcher::plugin::PluginManager;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[test]
 fn test_totp_plugin_queries_and_evaluations() {
@@ -16,7 +15,7 @@ fn test_totp_plugin_queries_and_evaluations() {
             enabled: true,
             prefix: "otp:".to_string(),
             name: "动态验证码".to_string(),
-            path: PathBuf::from("plugins/totp"),
+            path: None,
             entry: "index.js".to_string(),
             config: totp_config,
         },

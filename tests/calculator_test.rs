@@ -1,7 +1,6 @@
 use one_launcher::config::model::PluginConfig;
 use one_launcher::plugin::PluginManager;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[test]
 fn test_calculator_plugin_lifecycle_and_evaluation() {
@@ -15,7 +14,7 @@ fn test_calculator_plugin_lifecycle_and_evaluation() {
             enabled: true,
             prefix: "=".to_string(),
             name: "极速计算器".to_string(),
-            path: PathBuf::from("plugins/calculator"),
+            path: None,
             entry: "index.js".to_string(),
             config: calc_config,
         },

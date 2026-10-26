@@ -2,7 +2,6 @@ use one_launcher::config::model::PluginConfig;
 use one_launcher::plugin::PluginManager;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 
 #[test]
 fn test_clash_plugin_queries_and_env() {
@@ -33,7 +32,7 @@ secret: "test_secret_123"
             enabled: true,
             prefix: "clash:".to_string(),
             name: "Clash 控制器".to_string(),
-            path: PathBuf::from("plugins/clash"),
+            path: None,
             entry: "index.js".to_string(),
             config: clash_cfg,
         },

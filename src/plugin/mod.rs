@@ -206,7 +206,7 @@ impl PluginManager {
                 continue;
             }
 
-            let plugin_dir = resolve_plugin_dir(&cfg.path);
+            let plugin_dir = resolve_plugin_dir(&cfg.get_path(id));
             let entry_file = plugin_dir.join(&cfg.entry);
 
             if !entry_file.exists() {

@@ -1,7 +1,6 @@
 use one_launcher::config::model::PluginConfig;
 use one_launcher::plugin::PluginManager;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[test]
 fn test_everything_plugin_query() {
@@ -12,7 +11,7 @@ fn test_everything_plugin_query() {
             enabled: true,
             prefix: "fs:".to_string(),
             name: "Everything 全盘搜索".to_string(),
-            path: PathBuf::from("plugins/everything"),
+            path: None,
             entry: "index.js".to_string(),
             config: toml::Table::new(),
         },

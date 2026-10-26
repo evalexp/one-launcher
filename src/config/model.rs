@@ -104,14 +104,28 @@ impl Default for AppsConfig {
 pub struct PluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
     pub prefix: String,
+    #[serde(default)]
     pub name: String,
-    pub path: PathBuf,
+    /// 插件所在目录路径，可选。若未显式指定，默认指向 "plugins/<plugin-id>"
+    #[serde(default)]
+    pub path: Option<PathBuf>,
     #[serde(default = "default_entry")]
     pub entry: String,
     /// 插件自定义专属配置块 [plugins.<id>.config]
     #[serde(default)]
     pub config: toml::Table,
+}
+
+impl PluginConfig {
+    /// 获取插件所在的目录路径，若未显式配置则默认回退至 "plugins/<plugin-id>"
+    pub fn get_path(&self, plugin_id: &str) -> PathBuf {
+        match &self.path {
+            Some(p) if !p.as_os_str().is_empty() => p.clone(),
+            _ => PathBuf::from(format!("plugins/{}", plugin_id)),
+        }
+    }
 }
 
 fn default_true() -> bool {

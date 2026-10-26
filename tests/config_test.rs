@@ -96,3 +96,24 @@ fn test_manual_reload_config() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_plugin_path_defaults_to_plugins_dir() {
+    let toml_str = r#"
+    [plugins.my_plugin]
+    enabled = true
+
+    [plugins.custom_plugin]
+    enabled = true
+    path = "custom/path/my_dir"
+    "#;
+
+    let config: AppConfig = toml::from_str(toml_str).expect("应当支持省略 path 字段");
+    let my_plugin = &config.plugins["my_plugin"];
+    assert_eq!(my_plugin.path, None);
+    assert_eq!(my_plugin.get_path("my_plugin"), std::path::PathBuf::from("plugins/my_plugin"));
+
+    let custom_plugin = &config.plugins["custom_plugin"];
+    assert_eq!(custom_plugin.path, Some(std::path::PathBuf::from("custom/path/my_dir")));
+    assert_eq!(custom_plugin.get_path("custom_plugin"), std::path::PathBuf::from("custom/path/my_dir"));
+}

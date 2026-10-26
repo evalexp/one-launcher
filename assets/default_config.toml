@@ -50,10 +50,12 @@ path = "fs:logs/one-launcher.log"
 #
 # [plugins.my_plugin]
 # enabled = true
-# prefix = "cmd:"
-# name = "我的插件"
-# path = "plugins/my_plugin"
-# entry = "index.js"
+# # path 为可选配置，默认指向 "plugins/<plugin-id>"
+# # path = "plugins/my_plugin"
+# # prefix 与 name 可选（若省略则自动从插件 index.js 中的 metadata 读取）
+# # prefix = "cmd:"
+# # name = "我的插件"
+# # entry = "index.js"
 #
 # [plugins.my_plugin.config]
 # custom_key = "value"

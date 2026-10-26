@@ -1,7 +1,6 @@
 use one_launcher::config::model::PluginConfig;
 use one_launcher::plugin::PluginManager;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[test]
 fn test_system_plugin_queries_and_prefix_matching() {
@@ -12,7 +11,7 @@ fn test_system_plugin_queries_and_prefix_matching() {
             enabled: true,
             prefix: "sys:".to_string(),
             name: "系统控制".to_string(),
-            path: PathBuf::from("plugins/system"),
+            path: None,
             entry: "index.js".to_string(),
             config: toml::Table::new(),
         },
