@@ -5,6 +5,26 @@ export const metadata = {
 };
 
 /**
+ * 提取文件名的 basename
+ */
+function getBasename(pathStr) {
+  const norm = (pathStr || "").replace(/\\/g, "/");
+  const idx = norm.lastIndexOf("/");
+  return idx !== -1 ? norm.substring(idx + 1) : norm;
+}
+
+/**
+ * 将相对路径解析为基于远程基准地址的完整 URL
+ */
+function resolveUrl(baseUrl, relPath) {
+  const trimmed = (relPath || "").replace(/^\.?\//, "");
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  return baseUrl + trimmed;
+}
+
+/**
  * 获取插件存放的基础目录
  */
 function getPluginsBaseDir() {
@@ -93,54 +113,127 @@ function getInstalledPlugins() {
 }
 
 /**
- * 解析 GitHub 仓库或子目录链接
+ * 解析 GitHub 链接，提取目标仓库、分支、路径及推导的插件 ID
  */
-function parseGithubTarget(raw) {
+export function parseGithubUrl(raw) {
   let cleaned = (raw || "").trim();
   cleaned = cleaned.replace(/^https?:\/\//i, "");
-  cleaned = cleaned.replace(/^github\.com\//i, "");
-  cleaned = cleaned.replace(/\.git$/i, "");
   cleaned = cleaned.replace(/^\/+|\/+$/g, "");
 
-  const parts = cleaned.split("/").filter(Boolean);
-  if (parts.length < 2) {
-    return null;
-  }
-  const owner = parts[0];
-  const repo = parts[1];
-  const subfolder = parts.slice(2).join("/");
+  // 1. 直连 raw.githubusercontent.com
+  if (cleaned.toLowerCase().startsWith("raw.githubusercontent.com/")) {
+    const rest = cleaned.substring("raw.githubusercontent.com/".length);
+    const parts = rest.split("/").filter(Boolean);
+    if (parts.len < 3) return null;
+    const owner = parts[0];
+    const repo = parts[1];
+    const branch = parts[2];
+    const pathParts = parts.slice(3);
+    const fullPath = pathParts.join("/");
+    const idx = fullPath.lastIndexOf("/");
+    const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
+    const pluginId = baseDir ? baseDir.split("/").pop() : repo;
 
-  // 提取插件 ID
-  const pluginId = (parts.length >= 3 ? parts[parts.length - 1] : repo)
-    .toLowerCase()
-    .replace(/[^a-z0-9_\-]/g, "_");
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fullPath}`;
+    const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${baseDir ? baseDir + "/" : ""}`;
+
+    return {
+      owner,
+      repo,
+      branch,
+      pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+      rawUrl,
+      baseUrl
+    };
+  }
+
+  // 2. 标准 github.com 格式 (例如 github.com/owner/repo/index.js 或 github.com/owner/repo/plugins/calc/index.js)
+  cleaned = cleaned.replace(/^github\.com\//i, "");
+  const parts = cleaned.split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const owner = parts[0];
+  const repo = parts[1].replace(/\.git$/i, "");
+
+  let branch = "main";
+  let pathParts = parts.slice(2);
+
+  if (pathParts.length >= 2 && pathParts[0] === "blob") {
+    branch = pathParts[1];
+    pathParts = pathParts.slice(2);
+  }
+
+  // 若未指定 .js，默认指向 index.js
+  if (pathParts.length === 0 || !pathParts[pathParts.length - 1].endsWith(".js")) {
+    pathParts.push("index.js");
+  }
+
+  const fullPath = pathParts.join("/");
+  const idx = fullPath.lastIndexOf("/");
+  const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
+  const pluginId = baseDir ? baseDir.split("/").pop() : repo;
+
+  const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fullPath}`;
+  const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${baseDir ? baseDir + "/" : ""}`;
 
   return {
     owner,
     repo,
-    subfolder,
-    pluginId,
-    cloneUrl: `https://github.com/${owner}/${repo}.git`
+    branch,
+    fullPath,
+    pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+    rawUrl,
+    baseUrl
   };
 }
 
 /**
- * 递归复制文件夹
+ * 下载远程 index.js（带 main / master 分支回退）
  */
-function copyDirRecursive(src, dst) {
-  launcher.fs.mkdir(dst);
-  const items = launcher.fs.list(src) || [];
-  for (const item of items) {
-    const s = src + "/" + item.name;
-    const d = dst + "/" + item.name;
-    if (item.is_dir) {
-      if (item.name !== ".git") {
-        copyDirRecursive(s, d);
-      }
-    } else {
-      launcher.fs.copy(s, d, true);
+function downloadIndexJs(parsed) {
+  console.info(`正在请求下载: ${parsed.rawUrl}`);
+  let res = launcher.http.get(parsed.rawUrl, { timeout_ms: 15000 });
+  if (res.ok && res.body) {
+    return { code: res.body, baseUrl: parsed.baseUrl };
+  }
+
+  // 回退尝试 master 分支
+  if (parsed.branch === "main" && parsed.fullPath) {
+    const masterUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/master/${parsed.fullPath}`;
+    console.info(`main 分支未命中，尝试 master 分支: ${masterUrl}`);
+    res = launcher.http.get(masterUrl, { timeout_ms: 15000 });
+    if (res.ok && res.body) {
+      const idx = parsed.fullPath.lastIndexOf("/");
+      const baseDir = idx !== -1 ? parsed.fullPath.substring(0, idx) : "";
+      const masterBaseUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/master/${baseDir ? baseDir + "/" : ""}`;
+      return { code: res.body, baseUrl: masterBaseUrl };
     }
   }
+
+  return null;
+}
+
+/**
+ * 在受控环境安全解析 ES Module 代码，提取导出的 metadata 与 on_setup
+ */
+function evaluatePluginModule(code) {
+  const transformed = code
+    .replace(/^\s*export\s+const\s+/gm, "const ")
+    .replace(/^\s*export\s+let\s+/gm, "let ")
+    .replace(/^\s*export\s+var\s+/gm, "var ")
+    .replace(/^\s*export\s+function\s+/gm, "function ")
+    .replace(/^\s*export\s+class\s+/gm, "class ")
+    .replace(/^\s*export\s+default\s+/gm, "const __default__ = ");
+
+  const runner = new Function(`
+    "use strict";
+    ${transformed}
+    return {
+      metadata: typeof metadata !== "undefined" ? metadata : null,
+      on_setup: typeof on_setup === "function" ? on_setup : null
+    };
+  `);
+  return runner();
 }
 
 /**
@@ -189,111 +282,125 @@ function removePluginFromConfig(id) {
 }
 
 /**
- * 执行插件下载与安装
+ * 安装单文件驱动插件 (下载 index.js -> 解析 metadata -> 下载 dynamic library -> 执行 on_setup(context) 下载资源)
  */
-function executeInstall(info) {
+function executeInstall(parsed) {
   const pluginsBase = getPluginsBaseDir();
-  const destDir = (pluginsBase + "/" + info.pluginId).replace(/\\/g, "/");
-  console.info(`准备安装插件 [${info.pluginId}] 至: ${destDir}`);
+  const targetDir = (pluginsBase + "/" + parsed.pluginId).replace(/\\/g, "/");
 
-  const tempDir = (pluginsBase + "/.temp_install_" + Date.now()).replace(/\\/g, "/");
-  launcher.fs.mkdir(tempDir);
+  console.info(`准备安装插件 [${parsed.pluginId}] 至: ${targetDir}`);
+  launcher.fs.mkdir(targetDir);
 
-  let success = false;
-
-  // 1. 优先尝试系统 git 命令
-  console.info(`正在通过 Git 克隆: ${info.cloneUrl}`);
-  const gitRes = launcher.shell.exec("git", {
-    args: ["clone", "--depth", "1", info.cloneUrl, tempDir]
-  });
-
-  if (gitRes.code === 0 && launcher.fs.exists(tempDir)) {
-    console.info("Git 克隆成功！");
-    const srcDir = info.subfolder
-      ? (tempDir + "/" + info.subfolder).replace(/\\/g, "/")
-      : tempDir;
-
-    if (launcher.fs.exists(srcDir)) {
-      copyDirRecursive(srcDir, destDir);
-      success = true;
-    } else {
-      console.warn(`未在仓库中找到子目录: ${info.subfolder}，直接采用仓库根目录`);
-      copyDirRecursive(tempDir, destDir);
-      success = true;
+  // 1. 下载 index.js
+  const downloadRes = downloadIndexJs(parsed);
+  if (!downloadRes || !downloadRes.code) {
+    const errMsg = `下载插件脚本失败: ${parsed.rawUrl}`;
+    console.error(errMsg);
+    if (launcher.message_box) {
+      launcher.message_box(errMsg, "安装失败", "error");
     }
-  } else {
-    // 2. 回退机制：通过原生 HTTP 直接下载仓库 Zip
-    console.info("Git 不可用或克隆失败，回退为原生 HTTP 下载源码包...");
-    let zipUrl = `https://github.com/${info.owner}/${info.repo}/archive/refs/heads/main.zip`;
-    let zipRes = launcher.http.get(zipUrl, { timeout_ms: 30000 });
-    if (!zipRes.ok) {
-      zipUrl = `https://github.com/${info.owner}/${info.repo}/archive/refs/heads/master.zip`;
-      zipRes = launcher.http.get(zipUrl, { timeout_ms: 30000 });
+    return false;
+  }
+
+  const { code: indexCode, baseUrl } = downloadRes;
+
+  // 2. 解析插件模块
+  let mod;
+  try {
+    mod = evaluatePluginModule(indexCode);
+  } catch (err) {
+    const errMsg = "解析插件脚本模块失败: " + err;
+    console.error(errMsg);
+    if (launcher.message_box) {
+      launcher.message_box(errMsg, "语法解析错误", "error");
     }
+    return false;
+  }
 
-    if (zipRes.ok && zipRes.buffer) {
-      const zipPath = tempDir + "/archive.zip";
-      launcher.fs.write(zipPath, zipRes.buffer);
-      console.info("下载完成，正在解压...");
-      const tarRes = launcher.shell.exec(`tar -xf "${zipPath}" -C "${tempDir}"`);
-      if (tarRes.code === 0) {
-        const entries = launcher.fs.list(tempDir) || [];
-        const extractedRoot = entries.find(e => e.is_dir && e.name.startsWith(info.repo));
-        if (extractedRoot) {
-          const candidateSrc = info.subfolder
-            ? (extractedRoot.path.replace(/\\/g, "/") + "/" + info.subfolder)
-            : extractedRoot.path.replace(/\\/g, "/");
+  const meta = mod.metadata || {};
+  const pluginName = meta.name || parsed.pluginId;
+  const pluginPrefix = meta.prefix || (parsed.pluginId + ":");
 
-          if (launcher.fs.exists(candidateSrc)) {
-            copyDirRecursive(candidateSrc, destDir);
-            success = true;
-          } else {
-            copyDirRecursive(extractedRoot.path.replace(/\\/g, "/"), destDir);
-            success = true;
-          }
+  // 3. 检查 metadata.dynamic_library，若有则下载对应的 DLL 文件
+  if (meta.dynamic_library) {
+    for (const libKey in meta.dynamic_library) {
+      const entry = meta.dynamic_library[libKey];
+      if (entry && entry.path) {
+        const filename = getBasename(entry.path);
+        const dllUrl = resolveUrl(baseUrl, entry.path);
+        console.info(`正在下载目标插件依赖的原生动态库 [${libKey}]: ${dllUrl}`);
+        const dllRes = launcher.http.get(dllUrl, { timeout_ms: 30000 });
+        if (dllRes.ok && dllRes.buffer) {
+          launcher.fs.write(targetDir + "/" + filename, dllRes.buffer);
+          console.info(`动态库已落盘: ${targetDir}/${filename}`);
+        } else {
+          console.warn(`下载动态库失败: HTTP ${dllRes.status} ${dllRes.status_text}`);
         }
       }
     }
   }
 
-  // 清理临时目录
-  launcher.fs.remove(tempDir);
+  // 4. 准备隔离安装 context，指向资源下载接口，并调用目标插件的 on_setup(context)
+  if (typeof mod.on_setup === "function") {
+    console.info("在安装环境中准备 context 并执行目标插件 on_setup(context)...");
+    const installContext = {
+      cache_icon: function(iconPath) {
+        if (typeof iconPath === "string") {
+          const trimmed = iconPath.trim();
+          const filename = getBasename(trimmed);
+          const iconUrl = resolveUrl(baseUrl, trimmed);
+          console.info("on_setup 请求下载图标资源: " + iconUrl);
+          const iconRes = launcher.http.get(iconUrl, { timeout_ms: 15000 });
+          if (iconRes.ok && iconRes.buffer) {
+            launcher.fs.write(targetDir + "/" + filename, iconRes.buffer);
+            console.info(`图标资源已落盘: ${targetDir}/${filename}`);
+            return filename;
+          }
+          return iconPath;
+        }
+        return "file";
+      }
+    };
 
-  if (!success || !launcher.fs.exists(destDir)) {
-    console.error(`下载安装插件 [${info.pluginId}] 失败`);
-    return false;
+    try {
+      mod.on_setup(installContext);
+    } catch (err) {
+      console.warn("调用 on_setup 产生警告: " + err);
+    }
   }
 
-  // 3. 读取 index.js 获取 metadata 声明
-  let pluginName = info.pluginId;
-  let pluginPrefix = info.pluginId + ":";
-  const indexJs = destDir + "/index.js";
-  if (launcher.fs.exists(indexJs)) {
-    const code = launcher.fs.read_text(indexJs) || "";
-    const nm = code.match(/name:\s*['"](.*?)['"]/);
-    const pr = code.match(/prefix:\s*['"](.*?)['"]/);
-    if (nm) pluginName = nm[1];
-    if (pr) pluginPrefix = pr[1];
-  }
+  // 5. 保存 index.js 脚本至插件目录
+  launcher.fs.write(targetDir + "/index.js", indexCode);
+  console.info(`插件入口脚本已写入: ${targetDir}/index.js`);
 
-  // 4. 更新 config.toml
-  addPluginToConfig(info.pluginId, pluginName, pluginPrefix, `plugins/${info.pluginId}`);
+  // 6. 更新 config.toml
+  addPluginToConfig(parsed.pluginId, pluginName, pluginPrefix, `plugins/${parsed.pluginId}`);
 
-  // 5. 触发配置热重载
+  // 7. 触发主程序热重载
   if (launcher.app && launcher.app.reload) {
     launcher.app.reload();
   }
-  console.info(`插件 [${pluginName}] (${info.pluginId}) 安装完成！`);
+
+  // 8. 弹窗提醒安装成功
+  if (launcher.message_box) {
+    launcher.message_box(
+      `插件 [${pluginName}] (${parsed.pluginId})\n前缀: ${pluginPrefix}\n已成功安装并热重载生效！`,
+      "插件安装成功",
+      "info"
+    );
+  }
+
+  console.info(`插件 [${pluginName}] (${parsed.pluginId}) 安装完成！`);
   return true;
 }
 
 /**
- * 执行插件卸载
+ * 卸载插件
  */
 function executeUninstall(pluginId, pluginPath) {
   console.info(`准备卸载插件: [${pluginId}] 路径: ${pluginPath}`);
 
-  // 1. 从 config.toml 中移除
+  // 1. 从 config.toml 中移除配置
   removePluginFromConfig(pluginId);
 
   // 2. 删除磁盘对应文件夹
@@ -312,12 +419,18 @@ function executeUninstall(pluginId, pluginPath) {
   if (launcher.app && launcher.app.reload) {
     launcher.app.reload();
   }
-  console.info(`插件 [${pluginId}] 已成功卸载并重载生效！`);
+
+  // 4. 弹窗提醒卸载成功
+  if (launcher.message_box) {
+    launcher.message_box(`插件 [${pluginId}] 已成功彻底卸载！`, "插件管理", "info");
+  }
+
+  console.info(`插件 [${pluginId}] 已成功卸载！`);
   return true;
 }
 
 /**
- * 查询输入处理 (响应 install 与 uninstall)
+ * 查询输入处理 (响应 pm: install 与 pm: uninstall)
  */
 export function on_query(input) {
   const raw = (input || "").trim();
@@ -329,7 +442,7 @@ export function on_query(input) {
       {
         id: "guide-install",
         title: "安装插件 (Install Plugin)",
-        subtitle: "输入: install <github.com/xxx/yyy[/plugin_name]>",
+        subtitle: "输入: install <github.com/xxx/yyy/index.js>",
         icon: "info",
         badge: "管理",
         payload: { action: "guide" }
@@ -393,8 +506,8 @@ export function on_query(input) {
       return [
         {
           id: "prompt-install-url",
-          title: "请输入 GitHub 仓库地址",
-          subtitle: "例如: install github.com/owner/repo/my_plugin",
+          title: "请输入 GitHub 插件 index.js 地址",
+          subtitle: "例如: install github.com/owner/repo/index.js",
           icon: "info",
           badge: "安装",
           payload: { action: "guide" }
@@ -402,13 +515,13 @@ export function on_query(input) {
       ];
     }
 
-    const info = parseGithubTarget(target);
-    if (!info) {
+    const parsed = parseGithubUrl(target);
+    if (!parsed) {
       return [
         {
           id: "invalid-url",
           title: "无效的 GitHub 地址格式",
-          subtitle: `已输入: "${target}"，标准格式: github.com/owner/repo[/folder]`,
+          subtitle: `已输入: "${target}"，示例: github.com/owner/repo/index.js`,
           icon: "warn",
           badge: "错误",
           payload: { action: "none" }
@@ -418,12 +531,12 @@ export function on_query(input) {
 
     return [
       {
-        id: `install-${info.pluginId}`,
-        title: `下载并安装插件: ${info.pluginId}`,
-        subtitle: `来源: ${info.owner}/${info.repo}${info.subfolder ? "/" + info.subfolder : ""} (回车执行安装)`,
+        id: `install-${parsed.pluginId}`,
+        title: `下载并安装插件: ${parsed.pluginId}`,
+        subtitle: `来源: ${parsed.rawUrl} (回车解析 metadata、依赖并安装)`,
         icon: "info",
         badge: "安装",
-        payload: { action: "install", info }
+        payload: { action: "install", parsed }
       }
     ];
   }
@@ -433,7 +546,7 @@ export function on_query(input) {
     {
       id: "guide-install",
       title: "安装插件 (Install Plugin)",
-      subtitle: "输入: install <github.com/xxx/yyy[/plugin_name]>",
+      subtitle: "输入: install <github.com/xxx/yyy/index.js>",
       icon: "info",
       badge: "管理",
       payload: { action: "guide" }
@@ -458,8 +571,8 @@ export function on_select(item) {
   const payload = item && item.payload;
   if (!payload) return;
 
-  if (payload.action === "install" && payload.info) {
-    executeInstall(payload.info);
+  if (payload.action === "install" && payload.parsed) {
+    executeInstall(payload.parsed);
   } else if (payload.action === "uninstall" && payload.pluginId) {
     executeUninstall(payload.pluginId, payload.pluginPath);
   }

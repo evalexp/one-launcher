@@ -53,7 +53,7 @@ fn parse_url(url: &str) -> Result<(bool, String, u16, String), String> {
 }
 
 /// 发起原生 WinHttp 请求
-fn perform_http_request(
+pub fn perform_http_request(
     url: &str,
     method: &str,
     headers: &HashMap<String, String>,

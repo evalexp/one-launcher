@@ -84,10 +84,10 @@ pub fn register_app<'js>(
     // launcher.message_box(text, title?, type?) / launcher.alert
     let msgbox_fn = Function::new(
         ctx.clone(),
-        |text: String, title: Opt<String>, msg_type: Opt<String>| {
+        move |text: String, title: Opt<String>, msg_type: Opt<String>| {
             let title_str = title.0.unwrap_or_else(|| "OneLauncher".to_string());
-            let text_w = HSTRING::from(text);
-            let title_w = HSTRING::from(title_str);
+            let text_w = HSTRING::from(text.clone());
+            let title_w = HSTRING::from(title_str.clone());
 
             let icon_flag = match msg_type.0.as_deref() {
                 Some("error") => MB_ICONERROR,
@@ -97,13 +97,17 @@ pub fn register_app<'js>(
 
             let style = MB_OK | icon_flag | MB_TOPMOST | MB_SETFOREGROUND;
 
-            unsafe {
-                let _ = MessageBoxW(
-                    HWND::default(),
-                    PCWSTR(text_w.as_ptr()),
-                    PCWSTR(title_w.as_ptr()),
-                    style,
-                );
+            if hwnd != 0 {
+                unsafe {
+                    let _ = MessageBoxW(
+                        HWND::default(),
+                        PCWSTR(text_w.as_ptr()),
+                        PCWSTR(title_w.as_ptr()),
+                        style,
+                    );
+                }
+            } else {
+                tracing::info!("[MessageBox] {}: {}", title_str, text);
             }
             Ok::<_, rquickjs::Error>(())
         },
