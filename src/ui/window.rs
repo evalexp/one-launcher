@@ -215,15 +215,17 @@ impl LauncherWindowState {
     pub fn update_search(&mut self) {
         let cfg = self.config_mgr.get();
         let max_results = cfg.general.max_results;
-        let q = self.query.trim().to_string();
+        let query_trimmed_start = self.query.trim_start();
 
         let mut items = Vec::new();
 
         // 默认不显示任何结果，只有在输入后才搜索显示结果
-        if q.is_empty() {
+        if query_trimmed_start.is_empty() {
             unsafe {
                 let _ = KillTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE);
             }
+            self.pending_plugin_id.clear();
+            self.pending_query.clear();
             self.results = items;
             self.selected_index = 0;
             self.update_window_size();
@@ -233,8 +235,8 @@ impl LauncherWindowState {
         // 检查是否命中已注册的插件前缀
         let mut matched_plugin = None;
         for (p_id, p_name, p_prefix) in &self.plugin_prefixes {
-            if q.starts_with(p_prefix) {
-                let pure_query = q[p_prefix.len()..].trim().to_string();
+            if query_trimmed_start.starts_with(p_prefix) {
+                let pure_query = query_trimmed_start[p_prefix.len()..].trim_start().to_string();
                 matched_plugin = Some((p_id.clone(), p_name.clone(), pure_query));
                 break;
             }
@@ -264,7 +266,10 @@ impl LauncherWindowState {
             unsafe {
                 let _ = KillTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE);
             }
-            let matched_apps = self.app_indexer.search(&q, max_results);
+            self.pending_plugin_id.clear();
+            self.pending_query.clear();
+            let q_trimmed = query_trimmed_start.trim();
+            let matched_apps = self.app_indexer.search(q_trimmed, max_results);
             for app in matched_apps {
                 items.push(SearchResultItem::from_app(app));
             }
@@ -585,7 +590,7 @@ unsafe extern "system" fn launcher_wndproc(
             }
             WM_TIMER if wparam.0 == TIMER_PLUGIN_DEBOUNCE => {
                 let _ = KillTimer(hwnd, TIMER_PLUGIN_DEBOUNCE);
-                if !state.pending_query.is_empty() {
+                if !state.pending_plugin_id.is_empty() {
                     let _ = state.tx_worker.send(PluginWorkerTask::Query {
                         request_id: state.request_id,
                         plugin_id: state.pending_plugin_id.clone(),
