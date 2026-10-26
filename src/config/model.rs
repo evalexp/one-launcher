@@ -38,7 +38,7 @@ impl Default for AppConfig {
             "calculator".to_string(),
             PluginConfig {
                 enabled: true,
-                prefix: "calc:".to_string(),
+                prefix: "=".to_string(),
                 name: "极速计算器".to_string(),
                 path: PathBuf::from("plugins/calculator"),
                 entry: "index.js".to_string(),
@@ -68,7 +68,7 @@ pub struct GeneralConfig {
     pub clear_on_show: bool,
     /// 启动器列表最大显示结果数
     pub max_results: usize,
-    /// 插件输入防抖间隔时间 (毫秒)，默认 100ms；仅对外部插件生效，核心应用搜索 0ms 即时响应
+    /// 插件输入防抖间隔时间 (毫秒)，默认 100ms
     pub plugin_debounce_ms: u32,
 }
 

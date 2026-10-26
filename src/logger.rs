@@ -100,10 +100,7 @@ pub fn init_logger(config: &LogConfig, config_file_path: &Path) -> Result<LogDes
                 );
 
             let _ = subscriber.try_init();
-            info!(
-                "日志系统初始化就绪，输出目标: 终端控制台 (std)，过滤级别: '{}'",
-                config.level
-            );
+            info!("日志已就绪，目标: std，级别: '{}'", config.level);
         }
         LogDestination::File(ref log_file_path) => {
             if let Some(parent) = log_file_path.parent() {
@@ -136,7 +133,7 @@ pub fn init_logger(config: &LogConfig, config_file_path: &Path) -> Result<LogDes
 
             let _ = subscriber.try_init();
             info!(
-                "日志系统初始化就绪，输出目标: {:?}，过滤级别: '{}'",
+                "日志已就绪，目标: {:?}，级别: '{}'",
                 log_file_path, config.level
             );
         }

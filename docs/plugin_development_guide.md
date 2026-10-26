@@ -1,142 +1,174 @@
-# OneLauncher 插件开发规范与指南 (Plugin Development Guide)
+# OneLauncher 插件开发指南
 
-> **欢迎加入 OneLauncher 插件生态！**
-> OneLauncher 致力于打造 Windows 平台极速、轻量（常驻内存 8MB~15MB）、零后台 CPU 占用且高度解耦的类 macOS Spotlight / uTools 启动器。
-> 本文档旨在指导第三方开发者快速掌握 OneLauncher 的插件开发流程与规范。
+本文档介绍 OneLauncher 插件的运行机制、接口契约、全局 API 与开发流程。
 
 ---
 
-## 一、 核心架构与运行机制
+## 一、 架构与运行机制
 
-1. **QuickJS 原生嵌入引擎**：微秒级启动，单次解释执行延迟 < 0.05ms，零重型 V8/Electron 开销。
-2. **专用后台 Worker 线程隔离 (`OneLauncher-PluginWorker`)**：
-   - 所有插件的初始化、ES Module 解析、Native FFI 调用及输入求值，均在专属的后台工作线程中运行；
-   - 无论插件计算有多重或 FFI 是否跨进程阻塞，Win32 UI 线程始终保持 0ms 阻塞、丝滑响应。
-3. **严格 Prefix 独占路由**：
-   - 核心系统应用搜索为默认功能（无需前缀，直接在内存索引中检索）；
-   - 插件功能必须绑定独立且独占的 `prefix`（如 `fs:`、`calc:` 等），**绝不将插件结果与系统本地应用混搜**。
-4. **0 内存分配复用设计**：
-   - 插件配置对象在加载期单次实例化，按键检索期间 0 额外堆内存分配。
+1. **JavaScript 引擎**：内嵌 QuickJS 运行时，支持 ES 模块（`export` / `import`）。
+2. **后台 Worker 线程隔离**：所有插件的生命周期方法（`on_setup`、`on_query`、`on_select` 及 Native FFI 调用）均在专用的后台工作线程中执行，不阻塞主界面渲染与输入交互。
+3. **前缀路由机制 (Prefix Routing)**：
+   - 本地应用程序检索为默认功能（无需前缀）；
+   - 每个插件需声明专属的 `prefix`（例如 `fs:`、`=` 等），当用户输入的字符匹配此前缀时，由对应插件独占处理查询。
 
 ---
 
-## 二、 插件生命周期规范契约
+## 二、 目录结构与接口契约
 
-一个标准的 OneLauncher 插件目录结构如下：
+标准插件目录结构：
 ```text
 plugins/my_plugin/
-├── index.js          # 插件入口主文件 (默认 entry)
-├── icon.ico          # (可选) 自定义图标文件
-└── MyLibrary64.dll   # (可选) 声明式绑定的原生动态链接库
+├── index.js          # 插件入口文件 (默认 entry)
+├── icon.png          # (可选) 自定义图标文件
+└── MyLibrary64.dll   # (可选) 原生动态链接库
 ```
 
-插件必须且仅需导出一个 `metadata` 元信息对象以及约定的生命周期函数：
+插件必须导出一个 `metadata` 元信息对象，并按需实现约定的生命周期函数：
 
 ### 1. `export const metadata` (必需)
-定义插件的基础标识、前缀、默认配置项以及可选的动态链接库：
+定义插件的基础标识、前缀、默认配置及可选的原生动态库绑定：
 ```javascript
 export const metadata = {
-  name: "我的扩展插件",      // 插件中文显示名称
-  prefix: "demo:",          // 触发插件的专属前缀
-  default_config: {         // 插件默认参数 (将被自动映射入主程序 TOML 配置中)
+  name: "示例插件",        // 插件显示名称
+  prefix: "demo:",          // 触发前缀
+  default_config: {         // 默认配置 (可在主配置文件 config.toml 中覆写)
     max_results: 10,
     api_key: "",
   },
-  // (可选) 声明式 Native 动态链接库绑定
+  // (可选) 声明式原生动态链接库绑定
   dynamic_library: {
-    // 动态库声明...
+    // 详见后文 FFI 章节
   }
 };
 ```
 
 ---
 
-### 2. `export function on_setup(context)` (可选但推荐)
-插件被主程序加载时触发单次初始化。
+### 2. `export function on_setup(context)` (可选)
+插件加载时触发一次初始化。
 
-> [!NOTE]
-> 运行日志输出器（`console` / `launcher.log`）与当前生效配置（`launcher.config`）均已通过全局 `launcher` 对象直接提供。
-> `on_setup` 中的 `context` 专注于**一次性执行重型或文件 I/O 初始化**（例如加载本地自定义图片/图标并写入主程序缓存），无需在每次查询时重复进行磁盘 I/O。
+- **入参**：`context` 对象，专用于执行一次性重型初始化与图标缓存：
+  - `context.cache_icon(bytes | path): string`：将图标文件路径（相对路径或绝对路径）或二进制字节（`Uint8Array` / `ArrayBuffer` / 数字数组）存入主程序图标池，返回唯一的 `ref_id`。可在 `on_query` 中作为 `icon` 字段使用。
+- **示例**：
+```javascript
+let myIconRef = "file";
 
-| context 成员方法 | 说明 | 示例 |
-| :--- | :--- | :--- |
-| `cache_icon(bytes \| path)` | 将图标二进制字节（`Uint8Array` / `ArrayBuffer` / 数字数组）或相对/绝对路径缓存至程序内部，返回唯一的 `ref_id` | `const iconId = context.cache_icon("./icon.png");` |
+export function on_setup(context) {
+  // 缓存本地图标文件并获取引用 ID
+  myIconRef = context.cache_icon("./icon.png");
+  console.info("插件初始化完成");
+}
+```
 
 ---
 
 ### 3. `export function on_query(input)` (必需)
-当用户在前缀后输入字符并满足防抖间隔后触发。
+当用户输入前缀后的查询内容且满足防抖间隔时触发。
 
-- **入参**：`input: string` —— 用户剥离前缀后的纯查询字符串（例如输入 `calc: 1+2`，`input` 为 `"1+2"`）。
-- **返回值**：**必须返回对象数组**，每个条目必须满足规范字段：
+- **入参**：`input: string` —— 剥离前缀后的查询字符串（例如输入 `= 1+2` 时，`input` 为 `"1+2"`）。
+- **返回值**：必须返回对象数组，每个元素需包含以下字段：
 
 ```javascript
 [
   {
-    id: "唯一标识字符串",           // 必填 (string)
-    title: "主标题文本",            // 必填 (string)，列表中以高亮醒目字体展示
-    subtitle: "副标题说明或详情",    // 必填 (string)，列表中以低饱和灰度字体展示
-    icon: "图标引用ID",            // 必填 (string)，支持内置预设或 cache_icon 返回的 ref_id
-    payload: { ... }               // 必填 (object 或任意值)，回车选中时传递给 on_select
+    id: "唯一标识",           // string，必需
+    title: "主标题文本",       // string，必需，列表中突出显示
+    subtitle: "副标题说明",    // string，必需，列表中灰度显示
+    icon: "图标引用ID",       // string，必需，支持内置预设或 cache_icon 返回的 ref_id
+    payload: { ... },         // any，必需，回车确认时传递给 on_select
+    is_folder: false,         // boolean，可选，显式标记是否为目录
   }
 ]
 ```
 
-#### 内置预设图标引用 (无需打包图片即可开箱即用)：
-OneLauncher 内置了多款高辨识度的矢量/原生系统图标：
+#### 角标 (Badge) 显示规则：
+启动器列表条目右侧的角标根据条目类型自动判定：
+- 当条目为目录（`is_folder: true` 或 `icon: "folder"` / `"dir"`）时，角标显示为 `[文件夹]`；
+- 当条目为普通文件（`icon: "file"` / `"doc"`）时，角标显示为 `[文件]`；
+- 其余情况，角标显示为当前插件的 `name`（例如 `[极速计算器]`）。
 
-| 图标 ref_id | 视觉展示说明 |
+#### 内置预设图标列表：
+插件可直接在 `icon` 字段填入以下内置引用名，无需额外提供图片资源：
+
+| 图标 ref_id | 视觉样式 |
 | :--- | :--- |
-| `"file"` / `"doc"` | 精心绘制的高辨识度文件白底折角文档图标（蓝文本条纹，与文件夹视觉明显区分） |
-| `"folder"` / `"dir"` | 温暖高亮琥珀黄文件夹图标（Tab 提手立体视觉） |
-| `"error"` | 醒目红色圆环 + 白色叉号 ❌ (异常与故障诊断状态) |
-| `"success"` | 亮绿色圆环 + 白色勾号 ✔ (操作成功/完成状态) |
-| `"warn"` / `"warning"` | Windows 标准警告三角黄标 ⚠ |
-| `"info"` | Windows 标准对话框信息蓝标 ℹ |
-| `"calc"` / `"calculator"` | 经典计算器外形图标 |
-| `"terminal"` / `"cmd"` | 现代深色终端控制台图标 |
-| `"settings"` / `"config"` | 系统齿轮控制面板图标 |
-| `"notepad"` / `"text"` | 系统记事本图标 |
-| `"shield"` | Windows UAC 安全盾牌图标 |
+| `"file"` / `"doc"` | 白底折角文档图标 |
+| `"folder"` / `"dir"` | 琥珀黄文件夹图标 |
+| `"error"` | 红色圆环错误叉号 ❌ (故障诊断状态) |
+| `"success"` | 绿色圆环成功对勾 ✔ (操作完成状态) |
+| `"warn"` / `"warning"` | 标准警示三角黄标 ⚠ |
+| `"info"` | 标准信息对话框蓝标 ℹ |
+| `"calc"` / `"calculator"` | 计算器图标 |
+| `"terminal"` / `"cmd"` | 终端控制台图标 |
+| `"settings"` / `"config"` | 系统齿轮设置图标 |
+| `"notepad"` / `"text"` | 记事本文档图标 |
+| `"shield"` | Windows UAC 盾牌图标 |
 
 ---
 
 ### 4. `export function on_select(item)` (必需)
-当用户在候选列表中按下 `Enter` 回车或鼠标左键点击确认某项条目时触发。
+当用户在候选列表中按 `Enter` 回车或鼠标点击条目时触发。
 
 - **入参**：`item: { id: string, payload: any }` —— 对应 `on_query` 返回条目中的 `id` 与 `payload`。
-- **典型操作**：调用 `launcher.shell.open` 打开系统应用/网页，或使用 `launcher.clipboard.write_text` 写入剪贴板。
+- **典型操作**：调用 `launcher.shell.open` 打开文件或链接，或调用 `launcher.clipboard.write_text` 复制到剪贴板。
 
 ---
 
-## 三、 全局宿主 API (`launcher`)
+## 三、 全局宿主 API
 
-在插件执行上下文中，OneLauncher 原生注入了全局宿主对象：
+OneLauncher 在插件上下文中注入了全局对象，供插件随时调用。
 
-### 1. `launcher.shell.open(targetPath)`
-调用 Windows 系统默认关联程序打开目标路径、启动 `.exe`、打开目录或在默认浏览器中打开网址：
-```javascript
-launcher.shell.open("https://github.com");
-launcher.shell.open("C:\\Windows\\notepad.exe");
-```
+### 1. `launcher.shell`
+提供系统外壳操作接口。
+- **`launcher.shell.open(targetPath: string): void`**
+  - 使用 Windows 默认关联程序打开目标路径、启动 `.exe`、打开目录或在默认浏览器中打开网址。
+  - 示例：
+    ```javascript
+    launcher.shell.open("https://github.com");
+    launcher.shell.open("C:\\Windows\\notepad.exe");
+    launcher.shell.open("D:\\Documents");
+    ```
 
-### 2. `launcher.clipboard.write_text(text)` / `launcher.clipboard.write(text)`
-以 `CF_UNICODETEXT` 原生格式安全写入字符串至 Windows 系统剪贴板：
-```javascript
-launcher.clipboard.write_text("1024");
-```
+### 2. `launcher.clipboard`
+提供系统剪贴板原生操作接口。
+- **`launcher.clipboard.write_text(text: string): boolean`**（别名：`launcher.clipboard.write`）
+  - 以 UTF-16 原生格式将文本安全写入 Windows 系统剪贴板。
+  - 示例：
+    ```javascript
+    launcher.clipboard.write_text("42");
+    ```
 
 ### 3. `launcher.config`
-获取该插件当前生效的配置快照。
+当前插件生效的配置快照对象。
+- 在插件加载时，主程序将 `metadata.default_config` 与用户 `config.toml` 中 `[plugins.<id>.config]` 对应项合并后注入该对象；
+- 同时在全局作用域注入别名 `config`，支持 `launcher.config.xxx` 或 `config.xxx` 访问。
+- 示例：
+  ```javascript
+  const precision = (launcher.config && launcher.config.precision) || 6;
+  ```
 
-### 4. 控制台与日志输出
-支持标准 `console.log(...)`、`console.warn(...)`、`console.error(...)`，日志将根据主配置自动流向控制台或本地日志文件。
+### 4. `launcher.log` 与全局 `console`
+提供运行时日志输出，日志输出目标根据主程序 `config.toml` 中的 `[log]` 设置（控制台或本地日志文件）：
+- `launcher.log.info(msg: string)`
+- `launcher.log.warn(msg: string)`
+- `launcher.log.error(msg: string)`
+- `launcher.log.debug(msg: string)`
+
+亦支持标准 `console` 对象调用：
+- `console.log(...)` / `console.info(...)`（映射为 INFO 等级）
+- `console.warn(...)`（映射为 WARN 等级）
+- `console.error(...)`（映射为 ERROR 等级）
+- `console.debug(...)`（映射为 DEBUG 等级）
+
+### 5. 全局 `native` 对象
+当插件声明了 `metadata.dynamic_library` 时，各动态库导出的 C 函数会自动挂载至全局 `native.<LibName>.<SymbolName>` 下，支持在 JS 中直接同步调用。
 
 ---
 
 ## 四、 原生动态链接库 (FFI) 声明式绑定
 
-如果你的插件需要调用 Windows C/C++ 动态链接库（`.dll`），只需在 `metadata.dynamic_library` 中以声明式 JSON 配置：
+如插件需要调用 Windows C/C++ 动态链接库（`.dll`），可在 `metadata.dynamic_library` 中声明：
 
 ```javascript
 export const metadata = {
@@ -144,7 +176,7 @@ export const metadata = {
   prefix: "ffi:",
   dynamic_library: {
     MyLib: {
-      path: "./MyLib64.dll",
+      path: "./MyLib64.dll", // 相对于插件目录的相对路径，或绝对路径
       symbols: [
         { name: "AddNumbers", params: ["u32", "u32"], returns: "u32" },
         { name: "SetKeywordW", params: ["string"], returns: "void" },
@@ -156,25 +188,22 @@ export const metadata = {
 };
 ```
 
-- **加载期 Fail-Fast**：Rust 在启动插件时一次性校验 DLL 路径与所有导出符号。若符号不存在或签名不匹配，启动时即告警并拒绝加载，绝不在运行时产生段错误崩溃；
-- **微秒级挂载**：通过校验后，所有符号自动挂载至全局 `native.<LibName>.<SymbolName>` 下，在 JS 中可直接同步调用：
-  ```javascript
-  const sum = native.MyLib.AddNumbers(10, 20);
-  native.MyLib.SetKeywordW("keyword");
-  ```
+### 支持的参数与返回值类型：
+- **`"u32"` / `"i32"`**：32 位整数；
+- **`"bool"`**：布尔值；
+- **`"string"`**：UTF-16 字符串指针 (`*const u16`)；
+- **`"buffer"`**：UTF-16 输出缓冲区，绑定后在 JS 中调用自动解码为 JavaScript 字符串返回；
+- **`"void"`**：无返回值。
+
+若 DLL 不存在或导出符号缺失，启动加载时将直接提示报错并跳过该插件。
 
 ---
 
-## 五、 官方完整示例 1：Everything 全盘极速文件搜索
+## 五、 示例 1：Everything 全盘文件搜索 (Native C DLL 插件)
 
-> 源码位置：[`plugins/everything/index.js`](file:///D:/src/one-launcher/plugins/everything/index.js)  
-> 特性演示：**声明式 Native C DLL 绑定** + **on_setup 生命周期** + **错误码异常诊断** + **系统程序联动**
+源码位置：[`plugins/everything/index.js`](file:///D:/src/one-launcher/plugins/everything/index.js)
 
 ```javascript
-// ==============================================================================
-// OneLauncher 官方插件: Everything 全盘极速文件搜索
-// ==============================================================================
-
 export const metadata = {
   name: "Everything 全盘文件搜索",
   prefix: "fs:",
@@ -200,11 +229,9 @@ let fileIconRef = "file";
 let folderIconRef = "folder";
 
 export function on_setup(context) {
-  // context 专用于一次性预存图标等重型IO (context.cache_icon)
   fileIconRef = "file";
   folderIconRef = "folder";
-
-  console.info("Everything 插件初始化就绪 (on_setup)");
+  console.info("Everything 插件已就绪");
 }
 
 export function on_query(input) {
@@ -218,19 +245,19 @@ export function on_query(input) {
 
   if (!ok) {
     const err = native.Everything.Everything_GetLastError();
-    if (err === 2) { // EVERYTHING_ERROR_IPC (主程序未开启)
+    if (err === 2) { // EVERYTHING_ERROR_IPC (主程序未运行)
       return [{
         id: "everything_not_running",
         title: "未检测到 Everything 正在运行",
-        subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
-        icon: "error", // 内置醒目错误红标
+        subtitle: "检索服务依赖客户端主程序，请先启动 Everything",
+        icon: "error", // 展示错误红标
         payload: { action: "start_everything" },
       }];
     }
     return [];
   }
 
-  // 2. 获取总结果数并读取配置项
+  // 2. 获取结果并读取配置项
   const total = native.Everything.Everything_GetNumResults();
   const maxResults = (launcher.config && launcher.config.max_results) || 9;
   const count = Math.min(total, maxResults);
@@ -246,6 +273,7 @@ export function on_query(input) {
       title: fileName || fullPath,
       subtitle: fullPath,
       icon: isFolder ? folderIconRef : fileIconRef,
+      is_folder: isFolder,
       payload: {
         path: fullPath,
         is_folder: isFolder,
@@ -272,19 +300,14 @@ export function on_select(item) {
 
 ---
 
-## 六、 官方完整示例 2：Calculator 极速数学计算器
+## 六、 示例 2：Calculator 数学计算器 (纯 JavaScript 插件)
 
-> 源码位置：[`plugins/calculator/index.js`](file:///D:/src/one-launcher/plugins/calculator/index.js)  
-> 特性演示：**纯 JavaScript 轻量交互** + **安全数学求值** + **内置图标** + **剪贴板操作**
+源码位置：[`plugins/calculator/index.js`](file:///D:/src/one-launcher/plugins/calculator/index.js)
 
 ```javascript
-// ==============================================================================
-// OneLauncher 官方插件: 极速数学计算器 (Calculator)
-// ==============================================================================
-
 export const metadata = {
   name: "极速计算器",
-  prefix: "calc:",
+  prefix: "=",
   default_config: {
     precision: 6,
     auto_copy: true,
@@ -294,9 +317,8 @@ export const metadata = {
 let calcIcon = "calc";
 
 export function on_setup(context) {
-  // context 专用于一次性预存图标等重型IO (context.cache_icon)
   calcIcon = "calc";
-  console.info(`Calculator 计算器初始化就绪，精度: ${(launcher.config && launcher.config.precision) || 6}`);
+  console.info(`Calculator 插件已就绪 (精度: ${(launcher.config && launcher.config.precision) || 6})`);
 }
 
 export function on_query(input) {
@@ -316,7 +338,7 @@ export function on_query(input) {
     {
       id: "calculator_result",
       title: `${result}`,
-      subtitle: `= ${raw}  (回车即可复制计算结果到剪贴板)`,
+      subtitle: `= ${raw}  (回车复制到剪贴板)`,
       icon: calcIcon,
       payload: {
         expression: raw,
@@ -333,7 +355,7 @@ export function on_select(item) {
 
   const val = String(item.payload.result);
   launcher.clipboard.write_text(val);
-  console.info(`已成功复制计算结果 '${val}' 到剪贴板`);
+  console.info(`已复制计算结果 '${val}' 到剪贴板`);
 }
 
 function evaluateMath(rawExpr, precision) {
@@ -358,31 +380,31 @@ function evaluateMath(rawExpr, precision) {
 
 ---
 
-## 七、 插件注册与调试方式
+## 七、 插件配置与调试
 
-1. **在 `config.toml` 中注册**：
-   在配置文件中添加插件子块：
-   ```toml
-   [plugins.my_plugin]
-   enabled = true
-   prefix = "demo:"
-   name = "我的扩展插件"
-   path = "plugins/my_plugin"
-   # entry = "index.js" (可选，默认 index.js)
+### 1. 在 `config.toml` 中声明插件
+在主配置文件中添加插件条目：
+```toml
+[plugins.calculator]
+enabled = true
+prefix = "="
+name = "极速计算器"
+path = "plugins/calculator"
+# entry = "index.js" (可选，默认 index.js)
 
-   # 覆写插件在 metadata.default_config 中声明的专属配置项
-   [plugins.my_plugin.config]
-   max_results = 8
-   ```
+# 覆写插件在 metadata.default_config 中声明的默认配置项
+[plugins.calculator.config]
+precision = 4
+```
 
-2. **热重载调试**：
-   修改 `index.js` 脚本或 `config.toml` 配置后，右键任务栏系统托盘图标点击 **“重载配置”**，插件系统即刻自动全量重载生效，无需重启主程序。
+### 2. 热重载
+编辑插件脚本或修改 `config.toml` 后，右键任务栏系统托盘图标点击 **“重载配置”**，即可重新加载生效，无需重启启动器。
 
-3. **查看排错日志**：
-   在 `config.toml` 中配置：
-   ```toml
-   [log]
-   level = "debug"
-   path = "fs:logs/one-launcher.log"
-   ```
-   即可实时查阅插件 `on_setup`、`on_query`、`on_select` 执行详情与报错调用栈。
+### 3. 日志排查
+在 `config.toml` 中配置：
+```toml
+[log]
+level = "debug"
+path = "fs:logs/one-launcher.log"
+```
+即可查看插件加载、`on_setup`、`on_query`、`on_select` 执行日志与错误堆栈。

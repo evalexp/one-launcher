@@ -53,7 +53,7 @@ impl AppIndexManager {
 
     /// 启动选定的应用程序
     pub fn launch(item: &AppItem) -> Result<(), String> {
-        info!("正在启动应用程序: {} ({:?})", item.name, item.path);
+        info!("启动程序: {} ({:?})", item.name, item.path);
 
         #[cfg(windows)]
         {

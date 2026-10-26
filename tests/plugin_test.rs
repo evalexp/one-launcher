@@ -101,3 +101,45 @@ fn test_plugin_strict_lifecycle_and_default_config() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_search_result_item_badge() {
+    use one_launcher::plugin::model::PluginResultItem;
+    use one_launcher::ui::SearchResultItem;
+
+    // 1. 文件夹结果
+    let folder_item = PluginResultItem {
+        id: "dir_1".to_string(),
+        title: "MyFolder".to_string(),
+        subtitle: r"C:\MyFolder".to_string(),
+        icon: "folder".to_string(),
+        is_folder: true,
+        payload: String::new(),
+    };
+    let res_folder = SearchResultItem::from_plugin("Everything 全盘搜索", "everything", folder_item);
+    assert_eq!(res_folder.badge, "文件夹");
+
+    // 2. 文件结果 (即使来自 Everything 插件，也应显示为“文件”)
+    let file_item = PluginResultItem {
+        id: "file_1".to_string(),
+        title: "test.txt".to_string(),
+        subtitle: r"C:\test.txt".to_string(),
+        icon: "file".to_string(),
+        is_folder: false,
+        payload: String::new(),
+    };
+    let res_file = SearchResultItem::from_plugin("Everything 全盘搜索", "everything", file_item);
+    assert_eq!(res_file.badge, "文件");
+
+    // 3. 通用插件条目 (如计算器，显示插件名称)
+    let calc_item = PluginResultItem {
+        id: "calc_1".to_string(),
+        title: "42".to_string(),
+        subtitle: "= 6 * 7".to_string(),
+        icon: "calc".to_string(),
+        is_folder: false,
+        payload: "42".to_string(),
+    };
+    let res_calc = SearchResultItem::from_plugin("极速计算器", "calculator", calc_item);
+    assert_eq!(res_calc.badge, "极速计算器");
+}

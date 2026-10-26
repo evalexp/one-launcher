@@ -59,7 +59,7 @@ pub fn register_global_hotkey(hwnd: HWND, hotkey_str: &str) -> Result<(), String
         RegisterHotKey(hwnd, DEFAULT_HOTKEY_ID, modifiers, vk)
             .map_err(|e| format!("注册全局热键 '{}' 失败 (可能被其他程序占用): {}", hotkey_str, e))?;
 
-        info!("成功注册全局呼出热键: {}", hotkey_str);
+        info!("注册全局热键: {}", hotkey_str);
         Ok(())
     }
 }

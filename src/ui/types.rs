@@ -41,9 +41,12 @@ impl SearchResultItem {
     }
 
     pub fn from_plugin(plugin_name: &str, plugin_id: &str, item: PluginResultItem) -> Self {
-        let is_folder = item.is_folder || item.icon == "folder";
+        let is_folder = item.is_folder || item.icon == "folder" || item.icon == "dir";
+        let is_file = item.icon == "file" || item.icon == "doc";
         let badge = if is_folder {
             "文件夹".to_string()
+        } else if is_file {
+            "文件".to_string()
         } else {
             plugin_name.to_string()
         };

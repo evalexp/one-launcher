@@ -1,5 +1,5 @@
 # ==============================================================================
-# OneLauncher 极速启动器配置文件
+# OneLauncher 配置文件
 # 说明：修改配置保存后，可在系统托盘右键菜单中点击“重载配置”手动生效，无需重启程序。
 # ==============================================================================
 
@@ -12,7 +12,7 @@ hide_on_blur = true
 clear_on_show = true
 # 最大展示的搜索条目数量
 max_results = 8
-# 插件检索防抖时间 (毫秒)，打字停顿设定时间后才触发插件检索，避免高频请求；系统应用搜索不受影响（0ms 即时响应）
+# 插件检索防抖时间 (毫秒)
 plugin_debounce_ms = 100
 
 [appearance]
@@ -22,41 +22,36 @@ theme = "system"
 width = 680
 # 字体大小 (像素)
 font_size = 16
-# Windows 11 视觉材质: "mica" (云母), "acrylic" (亚克力), "solid" (纯色)
+# 背景视觉效果: "mica" (云母), "acrylic" (亚克力), "solid" (纯色)
 backdrop_effect = "mica"
 
 [apps]
 # 应用程序扫描的后缀名单
 extensions = ["lnk", "exe", "url"]
-# 是否扫描 Windows 10/11 UWP (应用商店/系统内置) 应用
+# 是否扫描 Windows UWP (应用商店/系统内置) 应用
 scan_uwp = true
 # 扫描排除词（若包含以下关键词则不收录）
 exclude_patterns = ["卸载", "Uninstall", "Help", "Readme"]
-# 用户自选的额外扫描目录 (例如便携绿色软件文件夹)
+# 用户自选的额外扫描目录
 extra_directories = [
     # "D:\\PortableApps",
     # "D:\\Tools",
 ]
 
 # ==============================================================================
-# 日志记录与排错配置 [log]
+# 日志配置 [log]
 # ==============================================================================
 [log]
 # 日志过滤级别: "trace", "debug", "info", "warn", "error", "silent" (默认为 "info")
-# 设置为 "silent" 时彻底静音，不输出任何日志
+# 设置为 "silent" 时不输出日志
 level = "info"
 # 日志输出目标:
 # - "std": 输出到终端控制台
-# - "fs:<path>": 输出到指定文件 (例如 "fs:log/one-launcher.log" 或 "fs:logs/one-launcher.log")
+# - "fs:<path>": 输出到指定文件 (例如 "fs:logs/one-launcher.log")
 path = "fs:logs/one-launcher.log"
 
 # ==============================================================================
-# 插件扩展配置 [plugins]
-# 说明：
-# 1. 系统核心应用搜索为默认功能，无需输入任何前缀，输入字母/拼音即在内存索引中检索；
-# 2. 外部扩展功能均作为独立插件存在，必须通过各自的 prefix 严格触发，不混合搜索；
-# 3. 插件入口 entry 默认为 index.js，一般无需指定；
-# 4. 插件支持在 JS metadata 中声明 dynamic_library 原生动态库，实现微秒级本地调用。
+# 插件配置 [plugins]
 # ==============================================================================
 [plugins.everything]
 enabled = true
@@ -65,13 +60,12 @@ name = "Everything 全盘搜索"
 path = "plugins/everything"
 # entry = "index.js"
 
-# 插件专属参数微调 (映射至 JS metadata.default_config)
 [plugins.everything.config]
 max_results = 9
 
 [plugins.calculator]
 enabled = true
-prefix = "calc:"
+prefix = "="
 name = "极速计算器"
 path = "plugins/calculator"
 # entry = "index.js"

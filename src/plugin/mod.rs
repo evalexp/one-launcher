@@ -187,7 +187,7 @@ impl PluginManager {
                     }
                 };
 
-                // 3. 构建该插件的合并配置并在加载期单次实例化 JS Object（后续查询 0 内存分配）
+                // 3. 构建该插件的合并配置并初始化 JS Object
                 let config_obj = Object::new(ctx.clone()).unwrap();
                 let mut merged_config = HashMap::new();
                 if let Some(def_cfg) = default_cfg_opt {
@@ -229,7 +229,7 @@ impl PluginManager {
                 }
                 let _ = ctx.globals().set("config", config_obj.clone());
 
-                // 4. 执行插件 on_setup(context) 初始化生命周期 (收敛 context 为 cache_icon，其余由全局 launcher 提供)
+                // 4. 执行插件 on_setup(context) 初始化生命周期
                 if let Ok(setup_fn) = module.get::<_, Function>("on_setup") {
                     let setup_ctx = Object::new(ctx.clone()).unwrap();
 
@@ -248,11 +248,11 @@ impl PluginManager {
                     if let Err(e) = setup_fn.call::<_, ()>((setup_ctx,)) {
                         warn!("插件 [{}] 执行 on_setup 失败: {}", plugin_id, e);
                     } else {
-                        info!("插件 [{}] on_setup 初始化执行就绪", plugin_id);
+                        info!("插件 [{}] 初始化就绪", plugin_id);
                     }
                 }
 
-                // 5. 严格校验并常驻注册 on_query 与 on_select 函数 (不符合规范直接拒绝加载)
+                // 5. 校验并注册 on_query 与 on_select 函数
                 let query_fn: Function = module
                     .get("on_query")
                     .map_err(|_| format!("插件 [{}] 缺少必需导出的 on_query(input) 函数", id))?;
@@ -263,7 +263,7 @@ impl PluginManager {
                     .map_err(|_| format!("插件 [{}] 缺少必需导出的 on_select(item) 函数", id))?;
                 let _ = ctx.globals().set(format!("__plugin_{}_select", plugin_id), select_fn);
 
-                info!("插件 [{}] ({}) 加载就绪，绑定前缀 '{}'", id, cfg_name, cfg_prefix);
+                info!("插件 [{}] 加载就绪，前缀 '{}'", id, cfg_prefix);
 
                 Ok(LoadedPlugin {
                     id: plugin_id,
@@ -315,7 +315,7 @@ impl PluginManager {
     pub fn query(&self, plugin_id: &str, input: &str) -> Vec<PluginResultItem> {
         self.ctx.with(|ctx| {
             tracing::debug!("向插件 [{}] 派发查询参数: '{}'", plugin_id, input);
-            // 复用加载期预先分配的静态配置对象引用，0 次 Object::new()，0 堆内存分配
+            // 同步当前插件对应的配置对象
             let cfg_key = format!("__plugin_{}_config", plugin_id);
             if let Ok(cfg_obj) = ctx.globals().get::<_, Object>(&cfg_key) {
                 if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {

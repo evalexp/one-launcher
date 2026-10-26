@@ -30,7 +30,7 @@ fn test_default_config_template_is_valid() {
     assert!(config.plugins.contains_key("calculator"));
     let calc = &config.plugins["calculator"];
     assert!(calc.enabled);
-    assert_eq!(calc.prefix, "calc:");
+    assert_eq!(calc.prefix, "=");
     assert_eq!(calc.config.get("precision").and_then(|v| v.as_integer()), Some(6));
 }
 

@@ -1,8 +1,3 @@
-// ==============================================================================
-// OneLauncher 官方插件: Everything 全盘极速文件搜索
-// 说明: 采用声明式 Native 动态链接绑定与 on_setup 规范生命周期
-// ==============================================================================
-
 export const metadata = {
   name: "Everything 全盘文件搜索",
   prefix: "fs:",
@@ -28,16 +23,13 @@ let fileIconRef = "file";
 let folderIconRef = "folder";
 
 /**
- * 插件初始化生命周期
- * @param {Object} context 宿主初始化对象 (提供 context.cache_icon 用于一次性完成文件/图片IO缓存)
- * @param {Function} context.cache_icon (bytes|path) => ref_id 将图标缓存至程序内部并返回引用 ID
+ * 插件初始化
+ * @param {Object} context 包含 context.cache_icon 用于图标缓存
  */
 export function on_setup(context) {
-  // 全局已注入 launcher.config 与 launcher.log / console，context 专用于高效预存图标等重型IO
   fileIconRef = "file";
   folderIconRef = "folder";
-
-  console.info("Everything 插件初始化就绪 (on_setup)");
+  console.info("Everything 插件已就绪");
 }
 
 /**

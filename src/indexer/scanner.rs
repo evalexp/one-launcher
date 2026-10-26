@@ -38,7 +38,7 @@ impl AppScanner {
             Self::scan_uwp_apps(config, &mut apps, &mut seen_names);
         }
 
-        info!("系统应用程序扫描完毕，共发现有效启动项: {} 个", apps.len());
+        info!("应用程序扫描完成，共 {} 项", apps.len());
         apps
     }
 

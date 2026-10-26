@@ -1,4 +1,4 @@
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -30,13 +30,13 @@ unsafe impl Send for TrayIcon {}
 unsafe impl Sync for TrayIcon {}
 
 impl TrayIcon {
-    /// 创建并添加系统托盘图标 (基于 OneLauncher "Unified Lens & One" 极简现代高审美设计)
+    /// 创建并添加系统托盘图标
     pub fn create(hwnd: HWND) -> Result<Self, String> {
         unsafe {
             let (hicon, is_custom) = match Self::create_unified_one_icon() {
                 Ok(icon) => (icon, true),
                 Err(e) => {
-                    info!("回退使用系统默认图标: {}", e);
+                    warn!("回退使用系统默认图标: {}", e);
                     let sys_icon = LoadIconW(None, IDI_APPLICATION)
                         .map_err(|err| format!("加载默认应用图标失败: {}", err))?;
                     (sys_icon, false)
@@ -57,7 +57,7 @@ impl TrayIcon {
             let copy_len = tip_utf16.len().min(nid.szTip.len() - 1);
             nid.szTip[..copy_len].copy_from_slice(&tip_utf16[..copy_len]);
 
-            // 系统托盘注册重试机制 (应对 Explorer 准备阶段或高 DPI 初始化抖动)
+            // 系统托盘注册重试机制
             let mut added = false;
             for _ in 0..5 {
                 let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
@@ -75,7 +75,7 @@ impl TrayIcon {
                 return Err("向系统通知区域注册托盘图标失败 (Shell_NotifyIconW NIM_ADD 拒绝)".to_string());
             }
 
-            info!("系统托盘专属 OneLauncher 极简透镜图标已成功注册");
+            info!("系统托盘图标注册成功");
             Ok(Self {
                 nid,
                 custom_icon: if is_custom { Some(hicon) } else { None },

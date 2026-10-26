@@ -33,7 +33,7 @@ impl ConfigManager {
         Self::ensure_file_exists(&path)?;
 
         let config = Self::read_config_from_file(&path)?;
-        info!("成功加载配置文件: {:?}", path);
+        info!("配置文件: {:?}", path);
 
         Ok(Self {
             path,
@@ -53,13 +53,13 @@ impl ConfigManager {
 
     /// 手动从磁盘重新加载最新配置文件并替换当前状态
     pub fn reload(&self) -> Result<AppConfig, String> {
-        info!("正在从磁盘重新读取配置文件: {:?}", self.path);
+        info!("重新读取配置文件: {:?}", self.path);
         let new_config = Self::read_config_from_file(&self.path)?;
         {
             let mut lock = self.current.write();
             *lock = new_config.clone();
         }
-        info!("配置重载成功！");
+        info!("配置重载完成");
         Ok(new_config)
     }
 
@@ -74,7 +74,7 @@ impl ConfigManager {
 
     /// 使用系统外部默认编辑器打开配置文件供用户编辑
     pub fn open_in_editor(&self) -> Result<(), String> {
-        info!("正在使用系统默认文本编辑器打开配置文件: {:?}", self.path);
+        info!("打开配置文件: {:?}", self.path);
 
         #[cfg(windows)]
         {
@@ -148,7 +148,7 @@ impl ConfigManager {
             }
             fs::write(path, template::default_config_content())
                 .map_err(|e| format!("写入默认配置文件模板失败 ({:?}): {}", path, e))?;
-            info!("已自动生成全量预设配置文件: {:?}", path);
+            info!("生成默认配置文件: {:?}", path);
         }
         Ok(())
     }

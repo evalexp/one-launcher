@@ -13,7 +13,7 @@ fn test_calculator_plugin_lifecycle_and_evaluation() {
         "calculator".to_string(),
         PluginConfig {
             enabled: true,
-            prefix: "calc:".to_string(),
+            prefix: "=".to_string(),
             name: "极速计算器".to_string(),
             path: PathBuf::from("plugins/calculator"),
             entry: "index.js".to_string(),
@@ -24,8 +24,8 @@ fn test_calculator_plugin_lifecycle_and_evaluation() {
     let mgr = PluginManager::init(&plugins);
 
     // 1. 前缀严格匹配
-    let matched = mgr.match_prefix("calc: 12 * (3 + 5)");
-    assert!(matched.is_some(), "应匹配 calc: 前缀");
+    let matched = mgr.match_prefix("= 12 * (3 + 5)");
+    assert!(matched.is_some(), "应匹配 = 前缀");
     let (plugin, query) = matched.unwrap();
     assert_eq!(plugin.id, "calculator");
     assert_eq!(query, "12 * (3 + 5)");

@@ -202,7 +202,7 @@ impl LauncherWindowState {
                 unsafe {
                     let _ = InvalidateRect(self.hwnd, None, false);
                 }
-                info!("OneLauncher 配置、热键与插件系统已成功重载生效！");
+                info!("配置与插件重载完成");
             }
             Err(err) => {
                 warn!("重载配置失败: {}", err);
@@ -210,7 +210,7 @@ impl LauncherWindowState {
         }
     }
 
-    /// 执行搜索与数据路由分发 (默认无输入不展示任何结果，按 prefix 独占路由，应用搜索免前缀且绝不防抖)
+    /// 执行搜索与数据路由分发
     pub fn update_search(&mut self) {
         let cfg = self.config_mgr.get();
         let max_results = cfg.general.max_results;
@@ -229,7 +229,7 @@ impl LauncherWindowState {
             return;
         }
 
-        // 检查是否命中已注册的插件前缀 (严格 prefix 独占路由，绝不进行混合搜索)
+        // 检查是否命中已注册的插件前缀
         let mut matched_plugin = None;
         for (p_id, p_name, p_prefix) in &self.plugin_prefixes {
             if q.starts_with(p_prefix) {
@@ -259,7 +259,7 @@ impl LauncherWindowState {
                 }
             }
         } else {
-            // 未匹配任何前缀，执行默认的系统核心应用搜索 (基于启动时维护的内存 Cache 毫秒级模糊匹配，0ms 绝不防抖！)
+            // 未匹配前缀，执行系统应用搜索
             unsafe {
                 let _ = KillTimer(self.hwnd, TIMER_PLUGIN_DEBOUNCE);
             }
@@ -628,7 +628,7 @@ unsafe extern "system" fn launcher_wndproc(
     }
 }
 
-/// 绘制极速轻量原生启动器界面 (GDI 双缓冲无闪烁绘制，uTools 经典高审美排版)
+/// 绘制启动器界面
 unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
@@ -704,7 +704,7 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
         FillRect(mem_dc, &divider_rect, div_brush);
         let _ = DeleteObject(div_brush);
 
-        // 7. 绘制 uTools 经典列表条目 (左侧程序图标，右侧程序名 + 低色调路径)
+        // 7. 绘制列表条目
         let mut y_offset = INPUT_HEIGHT + 1;
         let cfg = state.config_mgr.get();
         let max_results = cfg.general.max_results;
@@ -903,7 +903,7 @@ pub fn run_launcher(
             None,
         ).map_err(|e| format!("创建启动器窗口失败: {}", e))?;
 
-        // 启用 Windows 11 DWM 原生优雅圆角
+        // 启用窗口圆角
         let corner_preference = DWMWCP_ROUND;
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -926,9 +926,9 @@ pub fn run_launcher(
 
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
-        info!("OneLauncher 极简原生引擎已成功就绪，内存占用超低，按 Alt+Space 即可唤出！");
+        info!("引擎已就绪");
 
-        // 核心 Win32 消息循环 (必须调用 TranslateMessage 以正确支持字符与 IME 输入！)
+        // Win32 消息循环
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);

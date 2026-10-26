@@ -1,12 +1,6 @@
-// ==============================================================================
-// OneLauncher 官方插件: 极速数学计算器 (Calculator)
-// 说明: 纯 JavaScript 编写的轻量插件示例，展示 on_setup 生命周期、内置图标引用、
-//      自定义配置读取、规范结果对象以及系统剪贴板原生操作。
-// ==============================================================================
-
 export const metadata = {
   name: "极速计算器",
-  prefix: "calc:",
+  prefix: "=",
   default_config: {
     precision: 6,
     auto_copy: true,
@@ -16,20 +10,17 @@ export const metadata = {
 let calcIcon = "calc";
 
 /**
- * 插件初始化生命周期
- * @param {Object} context 宿主初始化环境对象 (提供 context.cache_icon 用于一次性完成文件/图片IO缓存)
- * @param {Function} context.cache_icon (bytes|path) => ref_id 缓存自定义图标
+ * 插件初始化
+ * @param {Object} context 包含 context.cache_icon 用于图标缓存
  */
 export function on_setup(context) {
-  // 全局已注入 launcher.config 与 console，context 专用于预存图标等重型IO
   calcIcon = "calc";
-
-  console.info(`Calculator 计算器插件初始化就绪，计算精度: ${(launcher.config && launcher.config.precision) || 6}`);
+  console.info(`Calculator 插件已就绪 (精度: ${(launcher.config && launcher.config.precision) || 6})`);
 }
 
 /**
  * 响应计算输入
- * @param {string} input 用户在 calc: 之后输入的数学表达式 (如 2^10, sqrt(144), 3*4+5)
+ * @param {string} input 用户在 = 之后输入的数学表达式 (如 2^10, sqrt(144), 3*4+5)
  * @returns {Array<{id: string, title: string, subtitle: string, icon: string, payload: Object}>}
  */
 export function on_query(input) {

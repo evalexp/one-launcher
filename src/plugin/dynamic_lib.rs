@@ -218,6 +218,6 @@ pub fn bind_dynamic_libraries<'js>(
         .set("native", native_obj)
         .map_err(|e| format!("设置全局 native 对象失败: {}", e))?;
 
-    info!("动态链接库加载并绑定成功");
+    info!("动态库加载成功");
     Ok(LoadedDynamicLibraries { _libs: loaded_libs })
 }
