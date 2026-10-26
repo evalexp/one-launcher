@@ -124,12 +124,13 @@ impl LauncherWindowState {
         let plugin_prefixes = extract_plugin_prefixes(&cfg.plugins);
         let worker_hwnd_val = hwnd.0 as isize;
         let initial_configs = cfg.plugins.clone();
+        let config_path = config_mgr.path().to_path_buf();
 
         // 启动专属的后台插件 Worker 线程 (彻底解放 Win32 UI 线程，QuickJS 与 FFI 全程在后台运行)
         std::thread::Builder::new()
             .name("OneLauncher-PluginWorker".to_string())
             .spawn(move || {
-                let mut p_mgr = PluginManager::init(&initial_configs);
+                let mut p_mgr = PluginManager::init_with_host(&initial_configs, worker_hwnd_val, Some(config_path.clone()));
                 while let Ok(task) = rx_task.recv() {
                     match task {
                         PluginWorkerTask::Query { request_id, plugin_id, input } => {
@@ -155,7 +156,7 @@ impl LauncherWindowState {
                             p_mgr.select(&plugin_id, &item_id, &payload);
                         }
                         PluginWorkerTask::Reload { configs } => {
-                            p_mgr = PluginManager::init(&configs);
+                            p_mgr = PluginManager::init_with_host(&configs, worker_hwnd_val, Some(config_path.clone()));
                         }
                     }
                 }

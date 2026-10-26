@@ -1,4 +1,5 @@
 pub mod dynamic_lib;
+pub mod host_app;
 pub mod host_env;
 pub mod host_fs;
 pub mod host_http;
@@ -67,8 +68,19 @@ impl PluginManager {
             .map(|p| p.name.clone())
             .unwrap_or_else(|| plugin_id.to_string())
     }
-    /// 扫描并初始化所有在配置文件中启用的插件
+    /// 扫描并初始化所有在配置文件中启用的插件（默认无宿主窗口绑定）
     pub fn init(configs: &HashMap<String, PluginConfig>) -> Self {
+        let config_path = crate::config::ConfigManager::detect_config_path();
+        Self::init_with_host(configs, 0, Some(config_path))
+    }
+
+    /// 扫描并初始化插件，并绑定 Win32 UI 线程宿主 HWND 与配置文件绝对路径
+    pub fn init_with_host(
+        configs: &HashMap<String, PluginConfig>,
+        hwnd: isize,
+        config_path_opt: Option<PathBuf>,
+    ) -> Self {
+        let config_path = config_path_opt.unwrap_or_else(crate::config::ConfigManager::detect_config_path);
         let rt = Runtime::new().expect("初始化 QuickJS Runtime 失败");
         let ctx = Context::full(&rt).expect("初始化 QuickJS Context 失败");
 
@@ -98,6 +110,9 @@ impl PluginManager {
 
             // 注册环境变量操作能力 (launcher.env)
             let _ = host_env::register_env(&ctx, &launcher);
+
+            // 注册应用生命周期与配置管理能力 (launcher.app)
+            let _ = host_app::register_app(&ctx, &launcher, hwnd, config_path);
 
             // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
             let copy_fn = Function::new(ctx.clone(), |text: String| {

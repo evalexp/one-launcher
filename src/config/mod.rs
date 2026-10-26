@@ -110,7 +110,7 @@ impl ConfigManager {
     }
 
     /// 检测配置文件存放路径（优先当前程序同级目录的便携配置，次选 %APPDATA%/OneLauncher）
-    fn detect_config_path() -> PathBuf {
+    pub fn detect_config_path() -> PathBuf {
         // 1. 优先检查当前运行工作目录或 exe 同级目录是否存在 config.toml
         if let Ok(exe_path) = env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {

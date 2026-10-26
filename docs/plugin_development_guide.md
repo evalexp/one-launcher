@@ -306,7 +306,23 @@ if (apiRes.ok) {
 
 ---
 
-### 6. `launcher.config`
+### 6. `launcher.app` (宿主程序与配置管理)
+提供与 OneLauncher 核心主程序的交互接口，支持退出、重载配置以及原生弹窗提示。
+
+- **`launcher.app.config_path: string`**：当前生效的 `config.toml` 文件在磁盘上的绝对路径；
+- **`launcher.app.quit(): void`**（别名：`launcher.app.exit`、`launcher.exit`）：安全退出启动器主程序；
+- **`launcher.app.reload(): void`**：通知主程序重新读取 `config.toml` 并热更新所有插件；
+- **`launcher.app.edit_config(): void`**：调用系统默认文本编辑器打开当前配置文件；
+- **`launcher.app.message_box(text: string, title?: string, type?: "info" | "warn" | "error"): void`**（别名：`launcher.message_box`、`launcher.alert`）：
+  - 调用 Windows 原生 `MessageBoxW` 弹出置顶系统对话框。
+  - 示例：
+    ```javascript
+    launcher.message_box("Mihomo 订阅更新成功！", "Clash 提示", "info");
+    ```
+
+---
+
+### 7. `launcher.config`
 当前插件生效的配置快照对象。
 - 在插件加载时，主程序将 `metadata.default_config` 与用户 `config.toml` 中 `[plugins.<id>.config]` 对应项合并后注入该对象；
 - 同时在全局作用域注入别名 `config`，支持 `launcher.config.xxx` 或 `config.xxx` 访问。
@@ -317,7 +333,7 @@ if (apiRes.ok) {
 
 ---
 
-### 7. `launcher.log` 与全局 `console`
+### 8. `launcher.log` 与全局 `console`
 提供运行时日志输出，日志输出目标根据主程序 `config.toml` 中的 `[log]` 设置（控制台或本地日志文件）：
 - `launcher.log.info(msg: string)`
 - `launcher.log.warn(msg: string)`
@@ -332,7 +348,7 @@ if (apiRes.ok) {
 
 ---
 
-### 8. 全局 `native` 对象
+### 9. 全局 `native` 对象
 当插件声明了 `metadata.dynamic_library` 时，各动态库导出的 C 函数会自动挂载至全局 `native.<LibName>.<SymbolName>` 下，支持在 JS 中直接同步调用。
 
 ---

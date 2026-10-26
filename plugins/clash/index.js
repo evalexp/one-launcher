@@ -172,10 +172,16 @@ export function on_select(item) {
       const subUrl = getSubscriptionUrl();
       if (!cfgPath) {
         console.error("未找到环境变量 MIHOMO_CONFIG");
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box("未找到环境变量 MIHOMO_CONFIG，请先在系统环境变量中设置配置文件路径。", "Clash 提示", "warn");
+        }
         return;
       }
       if (!subUrl) {
         console.error("未找到环境变量 SUBSCRIPTION_URL");
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box("未找到环境变量 SUBSCRIPTION_URL，请先在系统环境变量中设置订阅地址。", "Clash 提示", "warn");
+        }
         return;
       }
 
@@ -191,6 +197,9 @@ export function on_select(item) {
       const res = launcher.http.get(subUrl, { timeout_ms: 20000 });
       if (!res.ok || !res.body) {
         console.error(`下载订阅失败: HTTP ${res.status} ${res.status_text}`);
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box(`下载订阅配置失败: HTTP ${res.status} ${res.status_text}`, "Clash 订阅更新失败", "error");
+        }
         return;
       }
       launcher.fs.write(cfgPath, res.body);
@@ -213,8 +222,14 @@ export function on_select(item) {
 
       if (reloadRes.ok) {
         console.info("Mihomo 订阅更新并重载成功！");
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box("Mihomo 订阅更新并重载成功！", "Clash 订阅更新", "info");
+        }
       } else {
         console.warn(`Mihomo 重载请求完成: 状态 ${reloadRes.status} ${reloadRes.status_text}`);
+        if (typeof launcher !== "undefined" && launcher.message_box) {
+          launcher.message_box(`订阅已更新保存，但 Mihomo 重载返回状态: ${reloadRes.status} ${reloadRes.status_text}`, "Clash 订阅提示", "warn");
+        }
       }
       break;
     }
