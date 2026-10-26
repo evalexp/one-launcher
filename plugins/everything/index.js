@@ -95,7 +95,6 @@ export function on_query(input) {
       subtitle: fullPath,
       icon: isFolder ? folderIconRef : fileIconRef,
       badge: isFolder ? "文件夹" : "文件",
-      is_folder: isFolder,
       payload: {
         path: fullPath,
         is_folder: isFolder,

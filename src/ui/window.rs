@@ -734,8 +734,6 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
 
             let icon_opt = if !item.icon_path.is_empty() {
                 crate::ui::icon_extractor::get_icon_by_ref(&item.icon_path)
-            } else if item.is_folder {
-                crate::ui::icon_extractor::get_folder_icon()
             } else {
                 crate::ui::icon_extractor::get_file_icon()
             };
@@ -749,7 +747,7 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
                 let mut fallback_rect = RECT { left: icon_x, top: icon_y, right: icon_x + 32, bottom: icon_y + 32 };
                 let sym = match &item.kind {
                     SearchResultKind::App(_) => "⚡",
-                    SearchResultKind::Plugin { .. } if item.is_folder => "📁",
+                    _ if item.icon_path == "folder" || item.icon_path == "dir" => "📁",
                     _ => "📄",
                 };
                 let sym_h = HSTRING::from(sym);
@@ -801,7 +799,7 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
             SelectObject(mem_dc, font_badge);
             let (badge_bg, badge_fg) = match &item.kind {
                 SearchResultKind::App(_) => (COLORREF(0x00332211), COLORREF(0x00F8BD38)), // 蔚蓝天青 #38BDF8
-                SearchResultKind::Plugin { .. } if item.is_folder => (COLORREF(0x00112233), COLORREF(0x0024BFFB)), // 琥珀暖黄 #FBBF24
+                SearchResultKind::Plugin { .. } if item.badge == "文件夹" || item.icon_path == "folder" => (COLORREF(0x00112233), COLORREF(0x0024BFFB)), // 琥珀暖黄 #FBBF24
                 _ => (COLORREF(0x00113322), COLORREF(0x0099D334)), // 翡翠翠绿 #34D399
             };
 

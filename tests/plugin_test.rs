@@ -33,7 +33,7 @@ fn test_plugin_strict_lifecycle_and_default_config() {
         export function on_query(input) {
             const mult = (launcher.config && launcher.config.multiplier) || 1;
             return [
-                { id: "1", title: "Result: " + (Number(input) * mult), subtitle: "计算完成", icon: testIconRef, payload: { res: Number(input) * mult } }
+                { id: "1", title: "Result: " + (Number(input) * mult), subtitle: "计算完成", icon: testIconRef, badge: "乘法测试", payload: { res: Number(input) * mult } }
             ];
         }
 
@@ -98,6 +98,7 @@ fn test_plugin_strict_lifecycle_and_default_config() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].title, "Result: 50"); // 5 * 10 (来自 default_config)
     assert_eq!(results[0].icon, "terminal"); // 来自 on_setup 中的初始化赋值
+    assert_eq!(results[0].badge, "乘法测试"); // 来自 on_query 返回的 badge 字段
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -113,34 +114,31 @@ fn test_search_result_item_badge() {
         title: "MyFolder".to_string(),
         subtitle: r"C:\MyFolder".to_string(),
         icon: "folder".to_string(),
-        badge: None,
-        is_folder: true,
+        badge: "文件夹".to_string(),
         payload: String::new(),
     };
     let res_folder = SearchResultItem::from_plugin("Everything 全盘搜索", "everything", folder_item);
     assert_eq!(res_folder.badge, "文件夹");
 
-    // 2. 文件结果 (即使来自 Everything 插件，也应显示为“文件”)
+    // 2. 文件结果
     let file_item = PluginResultItem {
         id: "file_1".to_string(),
         title: "test.txt".to_string(),
         subtitle: r"C:\test.txt".to_string(),
         icon: "file".to_string(),
-        badge: None,
-        is_folder: false,
+        badge: "文件".to_string(),
         payload: String::new(),
     };
     let res_file = SearchResultItem::from_plugin("Everything 全盘搜索", "everything", file_item);
     assert_eq!(res_file.badge, "文件");
 
-    // 3. 通用插件条目 (如计算器，未传 badge 时回退展示插件名称)
+    // 3. 通用插件条目 (如未提供 badge，回退展示插件名称)
     let calc_item = PluginResultItem {
         id: "calc_1".to_string(),
         title: "42".to_string(),
         subtitle: "= 6 * 7".to_string(),
         icon: "calc".to_string(),
-        badge: None,
-        is_folder: false,
+        badge: String::new(),
         payload: "42".to_string(),
     };
     let res_calc = SearchResultItem::from_plugin("极速计算器", "calculator", calc_item);
@@ -152,8 +150,7 @@ fn test_search_result_item_badge() {
         title: "自定义".to_string(),
         subtitle: "描述".to_string(),
         icon: "calc".to_string(),
-        badge: Some("公式求值".to_string()),
-        is_folder: false,
+        badge: "公式求值".to_string(),
         payload: String::new(),
     };
     let res_custom = SearchResultItem::from_plugin("极速计算器", "calculator", custom_item);

@@ -76,20 +76,17 @@ export function on_setup(context) {
     title: "主标题文本",       // string，必需，列表中突出显示
     subtitle: "副标题说明",    // string，必需，列表中灰度显示
     icon: "图标引用ID",       // string，必需，支持内置预设或 cache_icon 返回的 ref_id
+    badge: "右侧角标文字",    // string，必需，列表中右侧展示（如 "文件"、"文件夹"、"计算器" 等）
     payload: { ... },         // any，必需，回车确认时传递给 on_select
-    badge: "自定义角标",      // string，可选，不传时自动推导
-    is_folder: false,         // boolean，可选，显式标记是否为目录
   }
 ]
 ```
 
-#### 角标 (Badge) 显示规则：
-启动器列表条目右侧的角标规则如下：
-1. **显式指定**：若条目对象中提供了 `badge` 字符串（非空），直接展示该自定义角标；
-2. **自动推导**（未提供 `badge` 时）：
-   - 当条目为目录（`is_folder: true` 或 `icon: "folder"` / `"dir"`）时，角标展示为 `[文件夹]`；
-   - 当条目为普通文件（`icon: "file"` / `"doc"`）时，角标展示为 `[文件]`；
-   - 其余情况，角标回退展示为当前插件的 `name`（例如 `[极速计算器]`）。
+#### 角标 (Badge) 说明：
+列表条目右侧展示的徽章文字完全由条目的 `badge` 字段指定。例如：
+- Everything 检索到文件夹时指定 `badge: "文件夹"`，检索到文件时指定 `badge: "文件"`；
+- 计算器插件指定 `badge: "计算器"`；
+- 状态或异常提醒条目可指定 `badge: "提示"`。
 
 #### 内置预设图标列表：
 插件可直接在 `icon` 字段填入以下内置引用名，无需额外提供图片资源：
@@ -278,7 +275,6 @@ export function on_query(input) {
       subtitle: fullPath,
       icon: isFolder ? folderIconRef : fileIconRef,
       badge: isFolder ? "文件夹" : "文件",
-      is_folder: isFolder,
       payload: {
         path: fullPath,
         is_folder: isFolder,

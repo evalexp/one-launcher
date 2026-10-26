@@ -17,7 +17,6 @@ pub struct SearchResultItem {
     pub subtitle: String,
     pub badge: String,
     pub icon_path: String,
-    pub is_folder: bool,
     pub kind: SearchResultKind,
 }
 
@@ -35,20 +34,13 @@ impl SearchResultItem {
             subtitle,
             badge,
             icon_path,
-            is_folder: false,
             kind: SearchResultKind::App(app),
         }
     }
 
     pub fn from_plugin(plugin_name: &str, plugin_id: &str, item: PluginResultItem) -> Self {
-        let is_folder = item.is_folder || item.icon == "folder" || item.icon == "dir";
-        let is_file = item.icon == "file" || item.icon == "doc";
-        let badge = if let Some(b) = item.badge.filter(|s| !s.trim().is_empty()) {
-            b
-        } else if is_folder {
-            "文件夹".to_string()
-        } else if is_file {
-            "文件".to_string()
+        let badge = if !item.badge.trim().is_empty() {
+            item.badge
         } else {
             plugin_name.to_string()
         };
@@ -57,7 +49,6 @@ impl SearchResultItem {
             subtitle: item.subtitle,
             badge,
             icon_path: item.icon,
-            is_folder,
             kind: SearchResultKind::Plugin {
                 plugin_id: plugin_id.to_string(),
                 item_id: item.id,

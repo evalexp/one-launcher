@@ -354,8 +354,7 @@ impl PluginManager {
                     let title: String = obj.get("title").unwrap_or_default();
                     let subtitle: String = obj.get("subtitle").unwrap_or_default();
                     let icon: String = obj.get("icon").unwrap_or_default();
-                    let badge: Option<String> = obj.get("badge").ok();
-                    let is_folder: bool = obj.get("is_folder").unwrap_or_else(|_| icon == "folder");
+                    let badge: String = obj.get("badge").unwrap_or_else(|_| plugin_id.to_string());
 
                     let payload_str = if let Ok(val) = obj.get::<_, rquickjs::Value>("payload") {
                         if let Some(s) = val.as_string() {
@@ -377,7 +376,6 @@ impl PluginManager {
                         subtitle,
                         icon,
                         badge,
-                        is_folder,
                         payload: payload_str,
                     });
                 }

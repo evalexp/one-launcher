@@ -34,6 +34,6 @@ fn test_everything_plugin_query() {
     let results = mgr.query(&plugin.id, pure_query);
     println!("Everything 插件通过 QuickJS + Native 动态库查询返回条数: {}", results.len());
     for item in results.iter().take(3) {
-        println!("  - [{}] {} ({})", if item.is_folder { "目录" } else { "文件" }, item.title, item.subtitle);
+        println!("  - [{}] {} ({})", item.badge, item.title, item.subtitle);
     }
 }
