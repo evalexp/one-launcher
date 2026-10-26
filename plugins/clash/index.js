@@ -274,21 +274,29 @@ export function on_select(item) {
         const proxyServer = `127.0.0.1:${mixed}`;
         console.info("正在开启系统代理: " + proxyServer);
 
-        const r1 = launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f');
-        const r2 = launcher.shell.exec(`reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /t REG_SZ /d "${proxyServer}" /f`);
-        const r3 = launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyOverride /t REG_SZ /d "<local>" /f');
+        const commands = [
+          'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f',
+          `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /t REG_SZ /d "${proxyServer}" /f`,
+          'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyOverride /t REG_SZ /d "<local>" /f'
+        ];
 
-        const ok1 = r1 && (r1.code === 0 || r1.success);
-        const ok2 = r2 && (r2.code === 0 || r2.success);
-        const ok3 = r3 && (r3.code === 0 || r3.success);
+        const res = launcher.shell.batch_exec(commands, { auto_sudo: true });
 
-        if (ok1 && ok2 && ok3) {
+        if (res.cancelled) {
+          console.warn("用户取消了提权操作");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box("操作已取消：需要管理员权限以修改代理设置。", "系统代理设置", "warn");
+          }
+          return;
+        }
+
+        if (res.success || res.code === 0) {
           console.info("全局系统代理已开启！");
           if (typeof launcher !== "undefined" && launcher.message_box) {
             launcher.message_box(`全局系统代理已开启！\n代理地址: ${proxyServer}`, "系统代理设置", "info");
           }
         } else {
-          const errMsg = [r1 && r1.stderr, r2 && r2.stderr, r3 && r3.stderr].filter(Boolean).join("\n") || "注册表写入失败";
+          const errMsg = res.stderr || res.stdout || "注册表写入失败";
           console.error("开启系统代理失败: " + errMsg);
           if (typeof launcher !== "undefined" && launcher.message_box) {
             launcher.message_box(`开启系统代理失败:\n${errMsg}`, "系统代理设置", "error");
@@ -306,16 +314,25 @@ export function on_select(item) {
     case "disable-system-proxy": {
       try {
         console.info("正在关闭系统代理...");
-        const res = launcher.shell.exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f');
-        const ok = res && (res.code === 0 || res.success);
+        const res = launcher.shell.batch_exec([
+          'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f'
+        ], { auto_sudo: true });
 
-        if (ok) {
+        if (res.cancelled) {
+          console.warn("用户取消了提权操作");
+          if (typeof launcher !== "undefined" && launcher.message_box) {
+            launcher.message_box("操作已取消：需要管理员权限以关闭系统代理设置。", "系统代理设置", "warn");
+          }
+          return;
+        }
+
+        if (res.success || res.code === 0) {
           console.info("全局系统代理已关闭！");
           if (typeof launcher !== "undefined" && launcher.message_box) {
             launcher.message_box("全局系统代理已成功关闭！", "系统代理设置", "info");
           }
         } else {
-          const errMsg = (res && res.stderr) || "注册表修改失败";
+          const errMsg = res.stderr || res.stdout || "注册表修改失败";
           console.error("关闭系统代理失败: " + errMsg);
           if (typeof launcher !== "undefined" && launcher.message_box) {
             launcher.message_box(`关闭系统代理失败:\n${errMsg}`, "系统代理设置", "error");

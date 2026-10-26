@@ -10,7 +10,7 @@ fn test_plugin_host_fs_and_process() {
         let launcher = Object::new(ctx.clone()).unwrap();
         let shell = Object::new(ctx.clone()).unwrap();
 
-        one_launcher::plugin::host_process::register_process(&ctx, &launcher, &shell).unwrap();
+        one_launcher::plugin::host_process::register_process(&ctx, &launcher, &shell, 0).unwrap();
         launcher.set("shell", shell).unwrap();
         one_launcher::plugin::host_fs::register_fs(&ctx, &launcher).unwrap();
         one_launcher::plugin::host_http::register_http(&ctx, &launcher).unwrap();
@@ -37,6 +37,45 @@ fn test_plugin_host_fs_and_process() {
             "#).unwrap();
             let proc_stdout: String = proc_res.get("stdout").unwrap();
             assert!(proc_stdout.contains("hello_process"));
+        }
+
+        // 3. 测试 batch_exec 多命令批处理与 auto_sudo 机制
+        {
+            let batch_res: Object = ctx.eval(r#"
+                launcher.shell.batch_exec([
+                    "echo batch_step_1",
+                    "echo batch_step_2"
+                ], { auto_sudo: true })
+            "#).unwrap();
+            let code: i32 = batch_res.get("code").unwrap();
+            let stdout: String = batch_res.get("stdout").unwrap();
+            let success: bool = batch_res.get("success").unwrap();
+            assert_eq!(code, 0);
+            assert!(success);
+            assert!(stdout.contains("batch_step_1"));
+            assert!(stdout.contains("batch_step_2"));
+        }
+
+        // 4. 测试 top-level launcher.batch_exec 以及 options.sudo = true (在无窗口测试环境下安全执行)
+        {
+            let sudo_res: Object = ctx.eval(r#"
+                launcher.batch_exec([
+                    "echo elevated_batch_step"
+                ], { sudo: true })
+            "#).unwrap();
+            let success: bool = sudo_res.get("success").unwrap();
+            assert!(success);
+        }
+
+        // 5. 测试 exec 携带 auto_sudo: true
+        {
+            let auto_res: Object = ctx.eval(r#"
+                launcher.shell.exec("echo hello_auto_sudo", { auto_sudo: true })
+            "#).unwrap();
+            let auto_code: i32 = auto_res.get("code").unwrap();
+            let auto_out: String = auto_res.get("stdout").unwrap();
+            assert_eq!(auto_code, 0);
+            assert!(auto_out.contains("hello_auto_sudo"));
         }
 
         // 3. 测试文件操作: 写入与读取原始 buffer

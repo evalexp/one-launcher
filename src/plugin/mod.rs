@@ -98,8 +98,8 @@ impl PluginManager {
             .unwrap();
             shell.set("open", open_fn).unwrap();
 
-            // 注册命令行与外部进程能力 (launcher.shell.exec / spawn 与 launcher.process)
-            let _ = host_process::register_process(&ctx, &launcher, &shell);
+            // 注册命令行与外部进程能力 (launcher.shell.exec / spawn 与 launcher.process，支持 sudo 提权与 batch_exec)
+            let _ = host_process::register_process(&ctx, &launcher, &shell, hwnd);
             launcher.set("shell", shell).unwrap();
 
             // 注册原生文件系统操作能力 (launcher.fs)
