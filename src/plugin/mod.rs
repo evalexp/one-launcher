@@ -1,4 +1,5 @@
 pub mod dynamic_lib;
+pub mod host_env;
 pub mod host_fs;
 pub mod host_http;
 pub mod host_process;
@@ -94,6 +95,9 @@ impl PluginManager {
 
             // 注册原生 HTTP 网络请求能力 (launcher.http 与 fetch)
             let _ = host_http::register_http(&ctx, &launcher);
+
+            // 注册环境变量操作能力 (launcher.env)
+            let _ = host_env::register_env(&ctx, &launcher);
 
             // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
             let copy_fn = Function::new(ctx.clone(), |text: String| {

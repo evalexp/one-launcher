@@ -289,7 +289,24 @@ if (apiRes.ok) {
 
 ---
 
-### 5. `launcher.config`
+### 5. `launcher.env` (系统环境变量访问)
+提供读写宿主操作系统环境变量的原生接口，支持函数调用与直接属性代理访问。
+
+- **`launcher.env.get(name: string): string | null`**：获取环境变量字符串值，不存在时返回 `null`；
+- **`launcher.env.set(name: string, value: string): void`**：设置环境变量；
+- **`launcher.env.has(name: string): boolean`**：判断环境变量是否存在；
+- **`launcher.env.remove(name: string): void`**：删除指定环境变量；
+- **`launcher.env.all(): Record<string, string>`**：获取全部环境变量的键值对象字典；
+- **动态属性代理**：亦支持直接通过 `launcher.env.<KEY>` 或 `launcher.env[KEY]` 读取或赋值环境变量。
+- 示例：
+  ```javascript
+  const mihomoConfig = launcher.env.get("MIHOMO_CONFIG") || launcher.env.MIHOMO_CONFIG;
+  const subUrl = launcher.env.SUBSCRIPTION_URL;
+  ```
+
+---
+
+### 6. `launcher.config`
 当前插件生效的配置快照对象。
 - 在插件加载时，主程序将 `metadata.default_config` 与用户 `config.toml` 中 `[plugins.<id>.config]` 对应项合并后注入该对象；
 - 同时在全局作用域注入别名 `config`，支持 `launcher.config.xxx` 或 `config.xxx` 访问。
@@ -300,7 +317,7 @@ if (apiRes.ok) {
 
 ---
 
-### 6. `launcher.log` 与全局 `console`
+### 7. `launcher.log` 与全局 `console`
 提供运行时日志输出，日志输出目标根据主程序 `config.toml` 中的 `[log]` 设置（控制台或本地日志文件）：
 - `launcher.log.info(msg: string)`
 - `launcher.log.warn(msg: string)`
@@ -315,7 +332,7 @@ if (apiRes.ok) {
 
 ---
 
-### 7. 全局 `native` 对象
+### 8. 全局 `native` 对象
 当插件声明了 `metadata.dynamic_library` 时，各动态库导出的 C 函数会自动挂载至全局 `native.<LibName>.<SymbolName>` 下，支持在 JS 中直接同步调用。
 
 ---
@@ -536,7 +553,24 @@ function evaluateMath(rawExpr, precision) {
 
 ---
 
-## 七、 插件配置与调试
+## 八、 示例 3：Clash 控制器 (综合运用 env, fs, http, shell, process)
+
+源码位置：[`plugins/clash/index.js`](file:///D:/src/one-launcher/plugins/clash/index.js)
+
+```javascript
+export const metadata = {
+  name: "Clash 控制器",
+  prefix: "clash:",
+  default_config: {}
+};
+
+// 综合使用 launcher.env 读取环境变量，launcher.fs 读取/备份配置文件，
+// launcher.http 发起网络请求下载订阅并通知热重载，以及 launcher.shell.exec 执行 reg 命令开启/关闭 Windows 系统代理。
+```
+
+---
+
+## 九、 插件配置与调试
 
 ### 1. 在 `config.toml` 中声明插件
 在主配置文件中添加插件条目：

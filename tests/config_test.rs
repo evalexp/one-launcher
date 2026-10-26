@@ -19,27 +19,39 @@ fn test_default_config_template_is_valid() {
     assert_eq!(config.log.level, "info");
     assert_eq!(config.log.path, "fs:logs/one-launcher.log");
 
-    // 验证 Everything 插件通过 [plugins.everything] 注册
+    // 验证默认模板下发时不携带任何插件
+    assert!(config.plugins.is_empty(), "默认配置模板应当不包含任何内置注册的插件");
+}
+
+#[test]
+fn test_plugin_registration_via_toml() {
+    let custom_toml = r#"
+    [plugins.everything]
+    enabled = true
+    prefix = "fs:"
+    name = "Everything 全盘搜索"
+    path = "plugins/everything"
+
+    [plugins.everything.config]
+    max_results = 9
+
+    [plugins.calculator]
+    enabled = true
+    prefix = "="
+    name = "极速计算器"
+    path = "plugins/calculator"
+
+    [plugins.calculator.config]
+    precision = 6
+    "#;
+    let config: AppConfig = toml::from_str(custom_toml).unwrap();
     assert!(config.plugins.contains_key("everything"));
-    let ev = &config.plugins["everything"];
-    assert!(ev.enabled);
-    assert_eq!(ev.prefix, "fs:");
-    assert_eq!(ev.config.get("max_results").and_then(|v| v.as_integer()), Some(9));
+    assert_eq!(config.plugins["everything"].prefix, "fs:");
+    assert_eq!(config.plugins["everything"].config.get("max_results").and_then(|v| v.as_integer()), Some(9));
 
-    // 验证 Calculator 插件通过 [plugins.calculator] 注册
     assert!(config.plugins.contains_key("calculator"));
-    let calc = &config.plugins["calculator"];
-    assert!(calc.enabled);
-    assert_eq!(calc.prefix, "=");
-    assert_eq!(calc.config.get("precision").and_then(|v| v.as_integer()), Some(6));
-
-    // 验证 TOTP 插件通过 [plugins.totp] 注册
-    assert!(config.plugins.contains_key("totp"));
-    let totp = &config.plugins["totp"];
-    assert!(totp.enabled);
-    assert_eq!(totp.prefix, "otp:");
-    assert_eq!(totp.config.get("interval").and_then(|v| v.as_integer()), Some(30));
-    assert_eq!(totp.config.get("algorithm").and_then(|v| v.as_str()), Some("SHA1"));
+    assert_eq!(config.plugins["calculator"].prefix, "=");
+    assert_eq!(config.plugins["calculator"].config.get("precision").and_then(|v| v.as_integer()), Some(6));
 }
 
 #[test]

@@ -46,34 +46,16 @@ path = "fs:logs/one-launcher.log"
 
 # ==============================================================================
 # 插件配置 [plugins]
+# 默认下发不携带/不启用任何预装插件。若需添加插件，可按如下格式配置：
+#
+# [plugins.my_plugin]
+# enabled = true
+# prefix = "cmd:"
+# name = "我的插件"
+# path = "plugins/my_plugin"
+# entry = "index.js"
+#
+# [plugins.my_plugin.config]
+# custom_key = "value"
 # ==============================================================================
-[plugins.everything]
-enabled = true
-prefix = "fs:"
-name = "Everything 全盘搜索"
-path = "plugins/everything"
-# entry = "index.js"
-
-[plugins.everything.config]
-max_results = 9
-
-[plugins.calculator]
-enabled = true
-prefix = "="
-name = "极速计算器"
-path = "plugins/calculator"
-# entry = "index.js"
-
-[plugins.calculator.config]
-precision = 6
-
-[plugins.totp]
-enabled = true
-prefix = "otp:"
-name = "动态验证码"
-path = "plugins/totp"
-# entry = "index.js"
-
-[plugins.totp.config]
-interval = 30
-algorithm = "SHA1"
+[plugins]
