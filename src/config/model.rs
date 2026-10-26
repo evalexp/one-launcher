@@ -31,6 +31,21 @@ impl Default for AppConfig {
             },
         );
 
+        let mut calc_config = toml::Table::new();
+        calc_config.insert("precision".to_string(), toml::Value::Integer(6));
+
+        plugins.insert(
+            "calculator".to_string(),
+            PluginConfig {
+                enabled: true,
+                prefix: "calc:".to_string(),
+                name: "极速计算器".to_string(),
+                path: PathBuf::from("plugins/calculator"),
+                entry: "index.js".to_string(),
+                config: calc_config,
+            },
+        );
+
         Self {
             general: GeneralConfig::default(),
             appearance: AppearanceConfig::default(),

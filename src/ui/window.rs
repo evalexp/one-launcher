@@ -5,7 +5,6 @@ use crate::plugin::PluginManager;
 use crate::tray::{
     TrayIcon, ID_TRAY_EDIT_CONFIG, ID_TRAY_EXIT, ID_TRAY_RELOAD_CONFIG, WM_TRAYICON,
 };
-use crate::ui::icon_extractor::get_icon_for_path;
 use crate::ui::types::{SearchResultItem, SearchResultKind};
 use tracing::{info, warn};
 use windows::core::{HSTRING, PCWSTR};
@@ -733,12 +732,12 @@ unsafe fn paint_launcher(hwnd: HWND, state: &LauncherWindowState) {
             let icon_x = 16;
             let icon_y = y_offset + 12;
 
-            let icon_opt = if item.is_folder {
+            let icon_opt = if !item.icon_path.is_empty() {
+                crate::ui::icon_extractor::get_icon_by_ref(&item.icon_path)
+            } else if item.is_folder {
                 crate::ui::icon_extractor::get_folder_icon()
-            } else if item.icon_path.is_empty() {
-                crate::ui::icon_extractor::get_file_icon()
             } else {
-                get_icon_for_path(&item.icon_path)
+                crate::ui::icon_extractor::get_file_icon()
             };
 
             if let Some(hicon) = icon_opt {

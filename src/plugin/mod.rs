@@ -72,6 +72,7 @@ impl PluginManager {
         ctx.with(|ctx| {
             let launcher = Object::new(ctx.clone()).unwrap();
             let shell = Object::new(ctx.clone()).unwrap();
+            let clipboard = Object::new(ctx.clone()).unwrap();
 
             // launcher.shell.open(path)
             let open_fn = Function::new(ctx.clone(), |path: String| {
@@ -81,6 +82,16 @@ impl PluginManager {
             .unwrap();
             shell.set("open", open_fn).unwrap();
             launcher.set("shell", shell).unwrap();
+
+            // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
+            let copy_fn = Function::new(ctx.clone(), |text: String| {
+                set_clipboard_text(&text);
+                Ok::<_, rquickjs::Error>(())
+            })
+            .unwrap();
+            clipboard.set("write_text", copy_fn.clone()).unwrap();
+            clipboard.set("write", copy_fn).unwrap();
+            launcher.set("clipboard", clipboard).unwrap();
 
             // 注入全局 console 与 launcher.log
             let console = Object::new(ctx.clone()).unwrap();
@@ -212,9 +223,86 @@ impl PluginManager {
                         _ => {}
                     }
                 }
-                let _ = ctx.globals().set(format!("__plugin_{}_config", plugin_id), config_obj);
+                let _ = ctx.globals().set(format!("__plugin_{}_config", plugin_id), config_obj.clone());
 
-                // 4. 严格校验并常驻注册 on_query 与 on_select 函数 (不符合规范直接拒绝加载)
+                // 4. 执行插件 on_setup(context) 初始化生命周期 (如果已定义)
+                if let Ok(setup_fn) = module.get::<_, Function>("on_setup") {
+                    let setup_ctx = Object::new(ctx.clone()).unwrap();
+
+                    let p_dir = plugin_dir.clone();
+                    let cache_icon_fn = Function::new(ctx.clone(), move |val: rquickjs::Value| {
+                        let ref_id = match extract_icon_bytes(&val, &p_dir) {
+                            Some(bytes) => crate::ui::icon_extractor::cache_icon_from_bytes(&bytes)
+                                .unwrap_or_else(|| "file".to_string()),
+                            None => "file".to_string(),
+                        };
+                        Ok::<_, rquickjs::Error>(ref_id)
+                    })
+                    .unwrap();
+                    setup_ctx.set("cache_icon", cache_icon_fn).unwrap();
+
+                    let cfg_clone = config_obj.clone();
+                    let get_config_fn = Function::new(ctx.clone(), move || Ok::<_, rquickjs::Error>(cfg_clone.clone())).unwrap();
+                    setup_ctx.set("get_plugin_config", get_config_fn).unwrap();
+
+                    let logger_obj = Object::new(ctx.clone()).unwrap();
+                    let id1 = plugin_id.clone();
+                    let id2 = plugin_id.clone();
+                    let id3 = plugin_id.clone();
+                    let id4 = plugin_id.clone();
+
+                    logger_obj
+                        .set(
+                            "info",
+                            Function::new(ctx.clone(), move |msg: String| {
+                                tracing::info!("[Plugin:{}] {}", id1, msg);
+                                Ok::<_, rquickjs::Error>(())
+                            })
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    logger_obj
+                        .set(
+                            "warn",
+                            Function::new(ctx.clone(), move |msg: String| {
+                                tracing::warn!("[Plugin:{}] {}", id2, msg);
+                                Ok::<_, rquickjs::Error>(())
+                            })
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    logger_obj
+                        .set(
+                            "error",
+                            Function::new(ctx.clone(), move |msg: String| {
+                                tracing::error!("[Plugin:{}] {}", id3, msg);
+                                Ok::<_, rquickjs::Error>(())
+                            })
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    logger_obj
+                        .set(
+                            "debug",
+                            Function::new(ctx.clone(), move |msg: String| {
+                                tracing::debug!("[Plugin:{}] {}", id4, msg);
+                                Ok::<_, rquickjs::Error>(())
+                            })
+                            .unwrap(),
+                        )
+                        .unwrap();
+
+                    let get_logger_fn = Function::new(ctx.clone(), move || Ok::<_, rquickjs::Error>(logger_obj.clone())).unwrap();
+                    setup_ctx.set("get_logger", get_logger_fn).unwrap();
+
+                    if let Err(e) = setup_fn.call::<_, ()>((setup_ctx,)) {
+                        warn!("插件 [{}] 执行 on_setup 失败: {}", plugin_id, e);
+                    } else {
+                        info!("插件 [{}] on_setup 初始化执行就绪", plugin_id);
+                    }
+                }
+
+                // 5. 严格校验并常驻注册 on_query 与 on_select 函数 (不符合规范直接拒绝加载)
                 let query_fn: Function = module
                     .get("on_query")
                     .map_err(|_| format!("插件 [{}] 缺少必需导出的 on_query(input) 函数", id))?;
@@ -315,15 +403,30 @@ impl PluginManager {
                     let id: String = obj.get("id").unwrap_or_default();
                     let title: String = obj.get("title").unwrap_or_default();
                     let subtitle: String = obj.get("subtitle").unwrap_or_default();
-                    let is_folder: bool = obj.get("is_folder").unwrap_or(false);
-                    let payload: String = obj.get("payload").unwrap_or_else(|_| id.clone());
+                    let icon: String = obj.get("icon").unwrap_or_default();
+                    let is_folder: bool = obj.get("is_folder").unwrap_or_else(|_| icon == "folder");
+
+                    let payload_str = if let Ok(val) = obj.get::<_, rquickjs::Value>("payload") {
+                        if let Some(s) = val.as_string() {
+                            s.to_string().unwrap_or_default()
+                        } else {
+                            ctx.json_stringify(val)
+                                .ok()
+                                .flatten()
+                                .and_then(|s| s.to_string().ok())
+                                .unwrap_or_default()
+                        }
+                    } else {
+                        String::new()
+                    };
 
                     items.push(PluginResultItem {
                         id,
                         title,
                         subtitle,
+                        icon,
                         is_folder,
-                        payload,
+                        payload: payload_str,
                     });
                 }
             }
@@ -349,7 +452,14 @@ impl PluginManager {
             if let Ok(select_fn) = ctx.globals().get::<_, Function>(&fn_name) {
                 let item_obj = Object::new(ctx.clone()).unwrap();
                 let _ = item_obj.set("id", item_id);
-                let _ = item_obj.set("payload", payload);
+                let payload_val = if let Ok(parsed) = ctx.json_parse(payload) {
+                    parsed
+                } else if let Ok(s) = rquickjs::String::from_str(ctx.clone(), payload) {
+                    rquickjs::Value::from_string(s)
+                } else {
+                    rquickjs::Value::new_null(ctx.clone())
+                };
+                let _ = item_obj.set("payload", payload_val);
                 if let Err(e) = select_fn.call::<_, ()>((item_obj,)) {
                     warn!("插件 [{}] on_select 执行失败: {}", plugin_id, e);
                 }
@@ -378,4 +488,78 @@ pub fn open_system_path(path: &str) {
             SW_SHOW,
         );
     }
+}
+
+/// 写入纯文本内容到 Windows 系统剪贴板
+#[cfg(windows)]
+pub fn set_clipboard_text(text: &str) -> bool {
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
+
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return false;
+        }
+        let _ = EmptyClipboard();
+        let utf16: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let byte_count = utf16.len() * 2;
+        if let Ok(hmem) = GlobalAlloc(GHND, byte_count) {
+            let ptr = GlobalLock(hmem);
+            if !ptr.is_null() {
+                std::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr as *mut u16, utf16.len());
+                let _ = GlobalUnlock(hmem);
+                let _ = SetClipboardData(13, windows::Win32::Foundation::HANDLE(hmem.0));
+            }
+        }
+        let _ = CloseClipboard();
+        true
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_clipboard_text(_text: &str) -> bool {
+    false
+}
+
+/// 从 QuickJS 值中安全提取图标二进制数据（支持 TypedArray、ArrayBuffer、数字数组、本地文件路径及字符串）
+pub fn extract_icon_bytes<'js>(
+    val: &rquickjs::Value<'js>,
+    plugin_dir: &std::path::Path,
+) -> Option<Vec<u8>> {
+    if let Ok(typed) = rquickjs::TypedArray::<u8>::from_value(val.clone()) {
+        return unsafe { typed.as_bytes() }.map(|b| b.to_vec());
+    }
+    if let Some(buf) = rquickjs::ArrayBuffer::from_value(val.clone()) {
+        return unsafe { buf.as_bytes() }.map(|b| b.to_vec());
+    }
+    if let Some(arr) = val.as_array() {
+        let mut bytes = Vec::with_capacity(arr.len());
+        for i in 0..arr.len() {
+            if let Ok(b) = arr.get::<u32>(i) {
+                bytes.push(b as u8);
+            } else {
+                return None;
+            }
+        }
+        return Some(bytes);
+    }
+    if let Some(s) = val.as_string() {
+        if let Ok(st) = s.to_string() {
+            let p = std::path::Path::new(&st);
+            let target_path = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                plugin_dir.join(p)
+            };
+            if target_path.exists() && target_path.is_file() {
+                if let Ok(file_bytes) = std::fs::read(&target_path) {
+                    return Some(file_bytes);
+                }
+            }
+            return Some(st.into_bytes());
+        }
+    }
+    None
 }

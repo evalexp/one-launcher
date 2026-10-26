@@ -10,14 +10,117 @@ use windows::Win32::UI::Shell::{
     SHCreateItemFromParsingName, IShellItem, IShellItemImageFactory, SHGetFileInfoW, SHFILEINFOW,
     SHGFI_ICON, SHGFI_LARGEICON, SIIGBF_RESIZETOFIT,
 };
-use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINFO};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateIconFromResourceEx, CreateIconIndirect, LoadIconW, HICON, ICONINFO, IDI_ASTERISK,
+    IDI_ERROR, IDI_EXCLAMATION, IDI_QUESTION, IDI_SHIELD, LR_DEFAULTCOLOR,
+};
 
 static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<isize>>>> = OnceLock::new();
 static FOLDER_ICON: OnceLock<Option<isize>> = OnceLock::new();
 static FILE_ICON: OnceLock<Option<isize>> = OnceLock::new();
+static ICON_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn get_cache() -> &'static Mutex<HashMap<String, Option<isize>>> {
     ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 根据图标引用 ID 获取 HICON（支持内置预设图标、自定义缓存 ref_id 以及本地物理路径）
+pub fn get_icon_by_ref(ref_id: &str) -> Option<HICON> {
+    if ref_id.is_empty() {
+        return None;
+    }
+
+    // 1. 检查内置预设图标 (零开销 / 极速直读)
+    match ref_id.to_lowercase().as_str() {
+        "folder" | "dir" | "directory" => return get_folder_icon(),
+        "file" | "doc" | "document" => return get_file_icon(),
+        "calc" | "calculator" => return get_icon_for_path(r"C:\Windows\System32\calc.exe").or_else(get_file_icon),
+        "terminal" | "cmd" | "console" => return get_icon_for_path(r"C:\Windows\System32\cmd.exe").or_else(get_file_icon),
+        "settings" | "config" => return get_icon_for_path(r"C:\Windows\System32\control.exe").or_else(get_file_icon),
+        "notepad" | "text" | "edit" => return get_icon_for_path(r"C:\Windows\System32\notepad.exe").or_else(get_file_icon),
+        "info" => unsafe { return LoadIconW(None, IDI_ASTERISK).ok(); },
+        "warn" | "warning" => unsafe { return LoadIconW(None, IDI_EXCLAMATION).ok(); },
+        "error" => unsafe { return LoadIconW(None, IDI_ERROR).ok(); },
+        "question" => unsafe { return LoadIconW(None, IDI_QUESTION).ok(); },
+        "shield" => unsafe { return LoadIconW(None, IDI_SHIELD).ok(); },
+        _ => {}
+    }
+
+    // 2. 检查由插件动态调用 cache_icon 缓存的自定义图标引用
+    let cache = get_cache();
+    {
+        let lock = cache.lock();
+        if let Some(val) = lock.get(ref_id) {
+            return val.map(|h| HICON(h as *mut _));
+        }
+    }
+
+    // 3. 兜底尝试作为本地文件路径/UWP 路径直接抽取
+    get_icon_for_path(ref_id)
+}
+
+/// 解析图标字节并写入内部图标缓存，返回其对应的 ref_id
+pub fn cache_icon_from_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let hicon_opt = unsafe {
+        // 1. 如果为完整的 .ico 格式容器 (以 0x00, 0x00, 0x01, 0x00 开头)
+        if bytes.len() >= 22 && bytes[0..4] == [0, 0, 1, 0] {
+            let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+            let mut best_offset = 0;
+            let mut best_size = 0;
+
+            for i in 0..count {
+                let entry_offset = 6 + i * 16;
+                if entry_offset + 16 <= bytes.len() {
+                    let w = bytes[entry_offset];
+                    let bytes_in_res = u32::from_le_bytes([
+                        bytes[entry_offset + 8],
+                        bytes[entry_offset + 9],
+                        bytes[entry_offset + 10],
+                        bytes[entry_offset + 11],
+                    ]) as usize;
+                    let image_offset = u32::from_le_bytes([
+                        bytes[entry_offset + 12],
+                        bytes[entry_offset + 13],
+                        bytes[entry_offset + 14],
+                        bytes[entry_offset + 15],
+                    ]) as usize;
+
+                    if image_offset + bytes_in_res <= bytes.len() {
+                        best_offset = image_offset;
+                        best_size = bytes_in_res;
+                        if w == 32 {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if best_size > 0 {
+                let res_slice = &bytes[best_offset..best_offset + best_size];
+                CreateIconFromResourceEx(res_slice, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR).ok()
+            } else {
+                None
+            }
+        } else {
+            // 2. 尝试作为原生图标资源数据 (如 PNG 数据块或 DIB) 直接解析
+            CreateIconFromResourceEx(bytes, true, 0x00030000, 32, 32, LR_DEFAULTCOLOR).ok()
+        }
+    };
+
+    if let Some(hicon) = hicon_opt {
+        let id_num = ICON_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ref_id = format!("icon_ref_{}", id_num);
+        let cache = get_cache();
+        let mut lock = cache.lock();
+        lock.insert(ref_id.clone(), Some(hicon.0 as isize));
+        Some(ref_id)
+    } else {
+        None
+    }
 }
 
 /// 获取全局常驻的通用文件夹图标 (零开销直读)

@@ -68,3 +68,13 @@ path = "plugins/everything"
 # 插件专属参数微调 (映射至 JS metadata.default_config)
 [plugins.everything.config]
 max_results = 9
+
+[plugins.calculator]
+enabled = true
+prefix = "calc:"
+name = "极速计算器"
+path = "plugins/calculator"
+# entry = "index.js"
+
+[plugins.calculator.config]
+precision = 6

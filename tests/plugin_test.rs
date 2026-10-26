@@ -21,10 +21,21 @@ fn test_plugin_strict_lifecycle_and_default_config() {
             }
         };
 
+        let setupCalled = false;
+        let testIconRef = "file";
+
+        export function on_setup(context) {
+            setupCalled = true;
+            const logger = context.get_logger();
+            const config = context.get_plugin_config();
+            logger.info("on_setup 测试通过");
+            testIconRef = "terminal";
+        }
+
         export function on_query(input) {
             const mult = (launcher.config && launcher.config.multiplier) || 1;
             return [
-                { id: "1", title: "Result: " + (Number(input) * mult), subtitle: "计算完成", is_folder: false, payload: "res" }
+                { id: "1", title: "Result: " + (Number(input) * mult), subtitle: "计算完成", icon: testIconRef, payload: { res: Number(input) * mult } }
             ];
         }
 
@@ -88,6 +99,7 @@ fn test_plugin_strict_lifecycle_and_default_config() {
     let results = mgr.query(&p.id, query);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].title, "Result: 50"); // 5 * 10 (来自 default_config)
+    assert_eq!(results[0].icon, "terminal"); // 来自 on_setup 中的初始化赋值
 
     let _ = fs::remove_dir_all(&temp_dir);
 }

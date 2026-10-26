@@ -41,7 +41,8 @@ impl SearchResultItem {
     }
 
     pub fn from_plugin(plugin_name: &str, plugin_id: &str, item: PluginResultItem) -> Self {
-        let badge = if item.is_folder {
+        let is_folder = item.is_folder || item.icon == "folder";
+        let badge = if is_folder {
             "文件夹".to_string()
         } else {
             plugin_name.to_string()
@@ -50,8 +51,8 @@ impl SearchResultItem {
             title: item.title,
             subtitle: item.subtitle,
             badge,
-            icon_path: String::new(),
-            is_folder: item.is_folder,
+            icon_path: item.icon,
+            is_folder,
             kind: SearchResultKind::Plugin {
                 plugin_id: plugin_id.to_string(),
                 item_id: item.id,
