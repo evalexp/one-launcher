@@ -15,6 +15,10 @@ fn test_default_config_template_is_valid() {
     assert_eq!(config.appearance.backdrop_effect, "mica");
     assert!(config.apps.scan_uwp);
     
+    // 验证日志配置
+    assert_eq!(config.log.level, "info");
+    assert_eq!(config.log.path, std::path::PathBuf::from("logs/one-launcher.log"));
+
     // 验证 Everything 插件通过 [plugins.everything] 注册
     assert!(config.plugins.contains_key("everything"));
     let ev = &config.plugins["everything"];

@@ -12,6 +12,34 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
+/// 解析插件目录在磁盘上的实际路径（支持当前工作目录、可执行文件目录、系统 APPDATA 目录）
+pub fn resolve_plugin_dir(path: &std::path::Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    // 1. 优先尝试当前工作目录
+    if path.exists() {
+        return path.to_path_buf();
+    }
+    // 2. 尝试可执行程序同级目录 (例如发布包结构)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let candidate = exe_dir.join(path);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    // 3. 尝试系统数据目录 (%APPDATA%/OneLauncher)
+    if let Some(app_data) = dirs::config_dir() {
+        let candidate = app_data.join("OneLauncher").join(path);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    path.to_path_buf()
+}
+
 pub struct LoadedPlugin {
     pub id: String,
     pub name: String,
@@ -40,7 +68,7 @@ impl PluginManager {
         let rt = Runtime::new().expect("初始化 QuickJS Runtime 失败");
         let ctx = Context::full(&rt).expect("初始化 QuickJS Context 失败");
 
-        // 注入全局 launcher 基础能力对象
+        // 注入全局基础能力对象 (launcher 与 console)
         ctx.with(|ctx| {
             let launcher = Object::new(ctx.clone()).unwrap();
             let shell = Object::new(ctx.clone()).unwrap();
@@ -52,9 +80,47 @@ impl PluginManager {
             })
             .unwrap();
             shell.set("open", open_fn).unwrap();
-
             launcher.set("shell", shell).unwrap();
+
+            // 注入全局 console 与 launcher.log
+            let console = Object::new(ctx.clone()).unwrap();
+            let log_obj = Object::new(ctx.clone()).unwrap();
+
+            let log_info = Function::new(ctx.clone(), |msg: String| {
+                tracing::info!("{}", msg);
+                Ok::<_, rquickjs::Error>(())
+            })
+            .unwrap();
+            let log_warn = Function::new(ctx.clone(), |msg: String| {
+                tracing::warn!("{}", msg);
+                Ok::<_, rquickjs::Error>(())
+            })
+            .unwrap();
+            let log_error = Function::new(ctx.clone(), |msg: String| {
+                tracing::error!("{}", msg);
+                Ok::<_, rquickjs::Error>(())
+            })
+            .unwrap();
+            let log_debug = Function::new(ctx.clone(), |msg: String| {
+                tracing::debug!("{}", msg);
+                Ok::<_, rquickjs::Error>(())
+            })
+            .unwrap();
+
+            console.set("log", log_info.clone()).unwrap();
+            console.set("info", log_info.clone()).unwrap();
+            console.set("warn", log_warn.clone()).unwrap();
+            console.set("error", log_error.clone()).unwrap();
+            console.set("debug", log_debug.clone()).unwrap();
+
+            log_obj.set("info", log_info).unwrap();
+            log_obj.set("warn", log_warn).unwrap();
+            log_obj.set("error", log_error).unwrap();
+            log_obj.set("debug", log_debug).unwrap();
+
+            launcher.set("log", log_obj).unwrap();
             ctx.globals().set("launcher", launcher).unwrap();
+            ctx.globals().set("console", console).unwrap();
         });
 
         let mut loaded = Vec::new();
@@ -64,7 +130,7 @@ impl PluginManager {
                 continue;
             }
 
-            let plugin_dir = &cfg.path;
+            let plugin_dir = resolve_plugin_dir(&cfg.path);
             let entry_file = plugin_dir.join(&cfg.entry);
 
             if !entry_file.exists() {
@@ -101,7 +167,7 @@ impl PluginManager {
                 // 2. 读取 metadata 对象并解析绑定原生动态库
                 let (dyn_libs, default_cfg_opt) = match module.get::<_, Object>("metadata") {
                     Ok(meta) => {
-                        let libs = bind_dynamic_libraries(&ctx, &meta, plugin_dir)?;
+                        let libs = bind_dynamic_libraries(&ctx, &meta, &plugin_dir)?;
                         let def_cfg = meta.get::<_, Object>("default_config").ok();
                         (libs, def_cfg)
                     }
@@ -210,6 +276,7 @@ impl PluginManager {
     /// 向指定插件发起用户输入查询 (on_query)
     pub fn query(&self, plugin_id: &str, input: &str) -> Vec<PluginResultItem> {
         self.ctx.with(|ctx| {
+            tracing::debug!("向插件 [{}] 派发查询参数: '{}'", plugin_id, input);
             // 复用加载期预先分配的静态配置对象引用，0 次 Object::new()，0 堆内存分配
             let cfg_key = format!("__plugin_{}_config", plugin_id);
             if let Ok(cfg_obj) = ctx.globals().get::<_, Object>(&cfg_key) {
@@ -261,6 +328,7 @@ impl PluginManager {
                 }
             }
 
+            tracing::debug!("插件 [{}] 查询完成，返回 {} 项结果", plugin_id, items.len());
             items
         })
     }

@@ -19,6 +19,7 @@ export const metadata = {
         { name: "Everything_GetNumResults", params: [], returns: "u32" },
         { name: "Everything_GetResultFullPathNameW", params: ["u32", "buffer", "u32"], returns: "u32" },
         { name: "Everything_IsFolderResult", params: ["u32"], returns: "bool" },
+        { name: "Everything_GetLastError", params: [], returns: "u32" },
       ]
     }
   }
@@ -38,11 +39,41 @@ export function on_query(input) {
   native.Everything.Everything_SetSearchW(input.trim());
   const ok = native.Everything.Everything_QueryW(true);
   if (!ok) {
+    const err = native.Everything.Everything_GetLastError();
+    if (console && console.warn) {
+      console.warn(`[Everything] Everything_QueryW 返回失败, GetLastError = ${err}`);
+    }
+    if (err === 2) {
+      return [{
+        id: "everything_not_running",
+        title: "未检测到 Everything 正在运行",
+        subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
+        is_folder: false,
+        payload: "",
+      }];
+    }
     return [];
   }
 
   // 2. 获取总结果数并读取配置项 max_results
   const total = native.Everything.Everything_GetNumResults();
+  if (total === 0) {
+    const err = native.Everything.Everything_GetLastError();
+    if (err === 2) {
+      if (console && console.warn) {
+        console.warn(`[Everything] 结果数为 0 且 GetLastError = 2 (IPC 错误，主程序未运行)`);
+      }
+      return [{
+        id: "everything_not_running",
+        title: "未检测到 Everything 正在运行",
+        subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
+        is_folder: false,
+        payload: "",
+      }];
+    }
+    return [];
+  }
+
   const maxResults = (launcher.config && launcher.config.max_results) || 9;
   const count = Math.min(total, maxResults);
   const items = [];
@@ -62,6 +93,10 @@ export function on_query(input) {
     });
   }
 
+  if (console && console.info) {
+    console.info(`[Everything] 搜索 '${input.trim()}' 命中 ${total} 条结果，当前展示 ${items.length} 条`);
+  }
+
   return items;
 }
 
@@ -70,7 +105,15 @@ export function on_query(input) {
  * @param {Object} item 被选中的条目对象
  */
 export function on_select(item) {
-  if (item && item.payload) {
+  if (!item) return;
+  if (item.id === "everything_not_running") {
+    if (console && console.info) {
+      console.info("[Everything] 用户点击了未运行提示，尝试拉起 Everything 客户端程序...");
+    }
+    launcher.shell.open("everything.exe");
+    return;
+  }
+  if (item.payload) {
     launcher.shell.open(item.payload);
   }
 }

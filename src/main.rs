@@ -16,32 +16,30 @@ fn main() {
         }
     };
 
-    // 初始化日志记录
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
-    info!("OneLauncher 正在启动...");
-
     // 1. 加载配置管理器
     let config_mgr = match ConfigManager::init() {
         Ok(mgr) => mgr,
         Err(err) => {
-            error!("初始化配置失败: {}", err);
+            eprintln!("初始化配置失败: {}", err);
             return;
         }
     };
 
     let cfg = config_mgr.get();
-    info!("配置加载完毕，全局呼出热键: {}", cfg.general.hotkey);
 
-    // 2. 初始化应用索引管理器 (后台扫描开始菜单与系统应用)
+    // 2. 初始化全局日志系统 (根据配置文件中的 log.level 与 log.path 双路输出)
+    if let Err(err) = one_launcher::logger::init_logger(&cfg.log, config_mgr.path()) {
+        eprintln!("初始化日志记录器警告: {}", err);
+    }
+
+    info!("OneLauncher 正在启动...");
+    info!("配置文件加载成功: {:?}", config_mgr.path());
+    info!("全局呼出热键: {}", cfg.general.hotkey);
+
+    // 3. 初始化应用索引管理器 (后台扫描开始菜单与系统应用)
     let app_indexer = AppIndexManager::new(&cfg.apps);
 
-    // 3. 运行原生无边框极速窗口 (插件系统由专属后台 Worker 线程驱动，UI 线程完全解耦)
+    // 4. 运行原生无边框极速窗口 (插件系统由专属后台 Worker 线程驱动，UI 线程完全解耦)
     if let Err(err) = run_launcher(config_mgr, app_indexer) {
         error!("运行时发生错误: {}", err);
     }

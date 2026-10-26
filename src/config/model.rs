@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub general: GeneralConfig,
     pub appearance: AppearanceConfig,
     pub apps: AppsConfig,
+    pub log: LogConfig,
     pub plugins: HashMap<String, PluginConfig>,
 }
 
@@ -34,6 +35,7 @@ impl Default for AppConfig {
             general: GeneralConfig::default(),
             appearance: AppearanceConfig::default(),
             apps: AppsConfig::default(),
+            log: LogConfig::default(),
             plugins,
         }
     }
@@ -143,4 +145,23 @@ fn default_true() -> bool {
 
 fn default_entry() -> String {
     "index.js".to_string()
+}
+
+/// 日志记录与排错配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogConfig {
+    /// 日志记录级别: "trace", "debug", "info", "warn", "error" (默认: "info")
+    pub level: String,
+    /// 日志文件输出路径 (支持相对路径或绝对路径，默认: "logs/one-launcher.log")
+    pub path: PathBuf,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            path: PathBuf::from("logs/one-launcher.log"),
+        }
+    }
 }
