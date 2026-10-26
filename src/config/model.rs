@@ -15,59 +15,12 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let mut plugins = HashMap::new();
-        let mut everything_config = toml::Table::new();
-        everything_config.insert("max_results".to_string(), toml::Value::Integer(9));
-
-        plugins.insert(
-            "everything".to_string(),
-            PluginConfig {
-                enabled: true,
-                prefix: "fs:".to_string(),
-                name: "Everything 全盘搜索".to_string(),
-                path: PathBuf::from("plugins/everything"),
-                entry: "index.js".to_string(),
-                config: everything_config,
-            },
-        );
-
-        let mut calc_config = toml::Table::new();
-        calc_config.insert("precision".to_string(), toml::Value::Integer(6));
-
-        plugins.insert(
-            "calculator".to_string(),
-            PluginConfig {
-                enabled: true,
-                prefix: "=".to_string(),
-                name: "极速计算器".to_string(),
-                path: PathBuf::from("plugins/calculator"),
-                entry: "index.js".to_string(),
-                config: calc_config,
-            },
-        );
-
-        let mut totp_config = toml::Table::new();
-        totp_config.insert("interval".to_string(), toml::Value::Integer(30));
-        totp_config.insert("algorithm".to_string(), toml::Value::String("SHA1".to_string()));
-
-        plugins.insert(
-            "totp".to_string(),
-            PluginConfig {
-                enabled: true,
-                prefix: "otp:".to_string(),
-                name: "动态验证码".to_string(),
-                path: PathBuf::from("plugins/totp"),
-                entry: "index.js".to_string(),
-                config: totp_config,
-            },
-        );
-
         Self {
             general: GeneralConfig::default(),
             appearance: AppearanceConfig::default(),
             apps: AppsConfig::default(),
             log: LogConfig::default(),
-            plugins,
+            plugins: HashMap::new(),
         }
     }
 }

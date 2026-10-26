@@ -54,7 +54,7 @@ fn test_partial_config_fallback_to_defaults() {
     // 其他字段应该自动继承默认值
     assert_eq!(parsed.general.max_results, 9);
     assert_eq!(parsed.appearance.width, 680);
-    assert!(parsed.plugins.contains_key("everything"));
+    assert!(parsed.plugins.is_empty());
 }
 
 #[test]
