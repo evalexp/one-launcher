@@ -25,20 +25,21 @@ fn main() {
             };
 
             // 若当前标准输出尚未重定向至管道或文件，则依附父进程控制台
-            if file_type != FILE_TYPE_PIPE && file_type != FILE_TYPE_DISK {
-                if AttachConsole(ATTACH_PARENT_PROCESS).is_ok() {
-                    if let Ok(conout) = CreateFileW(
-                        w!("CONOUT$"),
-                        0x40000000, // GENERIC_WRITE
-                        FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        None,
-                        OPEN_EXISTING,
-                        FILE_FLAGS_AND_ATTRIBUTES(0),
-                        None,
-                    ) {
-                        let _ = SetStdHandle(STD_OUTPUT_HANDLE, conout);
-                        let _ = SetStdHandle(STD_ERROR_HANDLE, conout);
-                    }
+            if file_type != FILE_TYPE_PIPE
+                && file_type != FILE_TYPE_DISK
+                && AttachConsole(ATTACH_PARENT_PROCESS).is_ok()
+            {
+                if let Ok(conout) = CreateFileW(
+                    w!("CONOUT$"),
+                    0x40000000, // GENERIC_WRITE
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    None,
+                ) {
+                    let _ = SetStdHandle(STD_OUTPUT_HANDLE, conout);
+                    let _ = SetStdHandle(STD_ERROR_HANDLE, conout);
                 }
             }
         }

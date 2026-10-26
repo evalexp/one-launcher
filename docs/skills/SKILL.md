@@ -3,9 +3,9 @@ name: one-launcher-plugin
 description: Specification and standard guide for creating, maintaining, and testing OneLauncher JavaScript plugins. Use when implementing plugins, querying capabilities, file operations, native WinHttp requests, process execution with UAC elevation, or dynamic FFI bindings for OneLauncher.
 ---
 
-# OneLauncher 插件开发规范与 AI 智能体指令 (SKILL)
+# OneLauncher 插件开发规范与指南 (SKILL)
 
-本规范专为编写、生成与重构 **OneLauncher** 插件的大语言模型（LLM）及开发者设计。编写 OneLauncher 插件时，必须严格遵守本规范中的接口契约、安全准则与性能边界。
+本文档定义 OneLauncher 插件系统的接口契约、安全准则、宿主能力与调试规范。编写插件时需遵守本规范中的生命周期、返回结构与性能边界。
 
 ---
 
@@ -383,9 +383,9 @@ console.error("致命错误记录");
 
 ---
 
-## 5. 大模型开发插件黄金法则 (LLM Checklist)
+## 5. 插件开发合规自查表 (Checklist)
 
-在为 OneLauncher 生成插件代码时，AI 智能体必须逐项核对以下要求：
+在编写或重构插件代码时，必须逐项核对以下规范要求：
 
 1. [ ] **必须包含完整的 `metadata` 声明**：提供唯一的 `name`、`prefix` 及 `default_config`。
 2. [ ] **`on_query` 必须返回规范的条目数组**：
@@ -491,9 +491,9 @@ export function on_select(item) {
 
 ---
 
-## 7. 开发者与大模型专属命令行调试工具 (CLI Diagnostics)
+## 7. 命令行调试工具 (CLI Diagnostics)
 
-OneLauncher 提供了专供第三方开发者与 AI 智能体在终端中完全隔离调试插件的命令行模式。在调用时**绝不启动/绘制 GUI 窗口**，直接将查询结果与执行状态结构化返回至终端。
+OneLauncher 提供用于在终端中完全隔离调试插件的命令行模式。在调用时**不启动与绘制 GUI 窗口**，直接将查询结果与执行状态结构化返回至终端。
 
 ### 7.1 核心命令参数
 
@@ -505,14 +505,14 @@ OneLauncher 提供了专供第三方开发者与 AI 智能体在终端中完全�
 | `-debug` | `-d` | 开启调试模式（日志级别自动提升为 `debug`，并输出至控制台） |
 | `-log-out <dest>` | `-l` | 指定日志输出目标，默认为 `'std'`（控制台），可选 `'fs:<path>'` |
 | `-log-level <level>`| 无 | 日志级别：`trace`、`debug`、`info`、`warn`、`error`、`silent` |
-| `-format <text\|json>`| `-f` | 结果输出格式：`text`（默认易读文本）或 `json`（结构化 JSON，便于大模型与脚本解析） |
+| `-format <text\|json>`| `-f` | 结果输出格式：`text`（默认易读文本）或 `json`（结构化 JSON，便于脚本解析） |
 | `-config <path>` | `-c` | 指定自定义 `config.toml` 文件路径 |
 | `-help` | `-h`, `/?` | 查看完整的命令行帮助指南 |
 
 ### 7.2 插件日志标识与结果输出规范
 
 1. **自动前缀标识**：插件通过 `console.log`、`console.info`、`console.warn`、`console.error` 或 `launcher.log` 输出的每条日志，宿主都会自动加上当前插件名称的前缀（例如 `-[Clash 控制器] 正在请求订阅...` 或 `-[系统管理] 退出程序`）。
-2. **结果与日志明确分隔**：宿主查询结果被严格置于专用的分界线块内，便于大模型和开发者提取与核验：
+2. **结果与日志明确分隔**：宿主查询结果被严格置于专用的分界线块内，便于脚本解析与核验：
 
 ```text
 ======================== ONELAUNCHER RESULTS ========================
@@ -530,7 +530,7 @@ Count:    1 item(s)
 =====================================================================
 ```
 
-### 7.3 大模型调试插件的标准命令模式
+### 7.3 常用调试命令示例
 
 - **验证空输入菜单补全**：
   `one-launcher -plugin system -input "sys:"`

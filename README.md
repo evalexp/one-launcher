@@ -10,4 +10,4 @@ Windows 原生启动器。
 - **配置驱动**：基于 `config.toml` 配置，支持托盘重载。
 
 ## 插件开发
-请查阅：[插件开发指南](docs/plugin_development_guide.md)
+请查阅：[插件开发规范与指南 (SKILL.md)](docs/skills/SKILL.md)

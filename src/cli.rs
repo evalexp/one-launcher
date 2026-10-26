@@ -232,7 +232,7 @@ Examples:
   # 查询并直接执行选择动作 (测试 on_select)
   one-launcher -plugin clash -input "clash:" -select update-subscription
 
-  # 输出结构化 JSON 供脚本/大模型自动化解析
+  # 输出结构化 JSON 供脚本与自动化工具解析
   one-launcher -plugin system -input "sys:" -format json
 "#
     );
@@ -360,7 +360,7 @@ pub fn run_cli(cli: &CliArgs) -> i32 {
     // 5. 确定查询内容与目标插件
     let raw_input = cli.input.as_deref().unwrap_or("");
 
-    let (target_plugin_id, query_str) = if let Some(_) = cli.plugin {
+    let (target_plugin_id, query_str) = if cli.plugin.is_some() {
         // 单独加载该插件时，优先直接将 input 派发给它
         let p = &pm.plugins[0];
         let stripped = if !p.prefix.is_empty() && raw_input.starts_with(&p.prefix) {
