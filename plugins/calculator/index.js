@@ -42,6 +42,7 @@ export function on_query(input) {
       title: `${result}`,
       subtitle: `= ${raw}  (回车即可复制计算结果到剪贴板)`,
       icon: calcIcon,
+      badge: "计算器",
       payload: {
         expression: raw,
         result: result,

@@ -54,6 +54,7 @@ export function on_query(input) {
         title: "未检测到 Everything 正在运行",
         subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
         icon: "error", // 使用内置醒目红色错误图标
+        badge: "提示",
         payload: { action: "start_everything" },
       }];
     }
@@ -71,6 +72,7 @@ export function on_query(input) {
         title: "未检测到 Everything 正在运行",
         subtitle: "Everything 检索服务依赖客户端主程序提供支持，请先启动 Everything",
         icon: "error", // 使用内置醒目红色错误图标
+        badge: "提示",
         payload: { action: "start_everything" },
       }];
     }
@@ -92,6 +94,8 @@ export function on_query(input) {
       title: fileName || fullPath,
       subtitle: fullPath,
       icon: isFolder ? folderIconRef : fileIconRef,
+      badge: isFolder ? "文件夹" : "文件",
+      is_folder: isFolder,
       payload: {
         path: fullPath,
         is_folder: isFolder,

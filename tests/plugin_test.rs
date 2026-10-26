@@ -113,6 +113,7 @@ fn test_search_result_item_badge() {
         title: "MyFolder".to_string(),
         subtitle: r"C:\MyFolder".to_string(),
         icon: "folder".to_string(),
+        badge: None,
         is_folder: true,
         payload: String::new(),
     };
@@ -125,21 +126,36 @@ fn test_search_result_item_badge() {
         title: "test.txt".to_string(),
         subtitle: r"C:\test.txt".to_string(),
         icon: "file".to_string(),
+        badge: None,
         is_folder: false,
         payload: String::new(),
     };
     let res_file = SearchResultItem::from_plugin("Everything 全盘搜索", "everything", file_item);
     assert_eq!(res_file.badge, "文件");
 
-    // 3. 通用插件条目 (如计算器，显示插件名称)
+    // 3. 通用插件条目 (如计算器，未传 badge 时回退展示插件名称)
     let calc_item = PluginResultItem {
         id: "calc_1".to_string(),
         title: "42".to_string(),
         subtitle: "= 6 * 7".to_string(),
         icon: "calc".to_string(),
+        badge: None,
         is_folder: false,
         payload: "42".to_string(),
     };
     let res_calc = SearchResultItem::from_plugin("极速计算器", "calculator", calc_item);
     assert_eq!(res_calc.badge, "极速计算器");
+
+    // 4. 自定义 badge
+    let custom_item = PluginResultItem {
+        id: "cust_1".to_string(),
+        title: "自定义".to_string(),
+        subtitle: "描述".to_string(),
+        icon: "calc".to_string(),
+        badge: Some("公式求值".to_string()),
+        is_folder: false,
+        payload: String::new(),
+    };
+    let res_custom = SearchResultItem::from_plugin("极速计算器", "calculator", custom_item);
+    assert_eq!(res_custom.badge, "公式求值");
 }

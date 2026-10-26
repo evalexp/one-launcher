@@ -12,6 +12,9 @@ pub struct PluginResultItem {
     /// 图标引用 ID (ref_id)
     #[serde(default)]
     pub icon: String,
+    /// (可选) 自定义右侧角标文字，未提供时自动推导为 [文件夹] / [文件] / [插件名]
+    #[serde(default)]
+    pub badge: Option<String>,
     /// 是否为文件夹
     #[serde(default)]
     pub is_folder: bool,

@@ -37,6 +37,7 @@ fn test_calculator_plugin_lifecycle_and_evaluation() {
     assert_eq!(item.id, "calculator_result");
     assert_eq!(item.title, "96");
     assert_eq!(item.icon, "calc");
+    assert_eq!(item.badge.as_deref(), Some("计算器"));
     assert!(item.payload.contains("96"));
 
     // 3. 高级数学函数求值 (sqrt, 幂次 ^)
