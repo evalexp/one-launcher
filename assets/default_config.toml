@@ -72,3 +72,14 @@ path = "plugins/calculator"
 
 [plugins.calculator.config]
 precision = 6
+
+[plugins.totp]
+enabled = true
+prefix = "otp:"
+name = "动态验证码"
+path = "plugins/totp"
+# entry = "index.js"
+
+[plugins.totp.config]
+interval = 30
+algorithm = "SHA1"

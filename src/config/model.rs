@@ -46,6 +46,22 @@ impl Default for AppConfig {
             },
         );
 
+        let mut totp_config = toml::Table::new();
+        totp_config.insert("interval".to_string(), toml::Value::Integer(30));
+        totp_config.insert("algorithm".to_string(), toml::Value::String("SHA1".to_string()));
+
+        plugins.insert(
+            "totp".to_string(),
+            PluginConfig {
+                enabled: true,
+                prefix: "otp:".to_string(),
+                name: "动态验证码".to_string(),
+                path: PathBuf::from("plugins/totp"),
+                entry: "index.js".to_string(),
+                config: totp_config,
+            },
+        );
+
         Self {
             general: GeneralConfig::default(),
             appearance: AppearanceConfig::default(),

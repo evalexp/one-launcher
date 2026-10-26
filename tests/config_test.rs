@@ -32,6 +32,14 @@ fn test_default_config_template_is_valid() {
     assert!(calc.enabled);
     assert_eq!(calc.prefix, "=");
     assert_eq!(calc.config.get("precision").and_then(|v| v.as_integer()), Some(6));
+
+    // 验证 TOTP 插件通过 [plugins.totp] 注册
+    assert!(config.plugins.contains_key("totp"));
+    let totp = &config.plugins["totp"];
+    assert!(totp.enabled);
+    assert_eq!(totp.prefix, "otp:");
+    assert_eq!(totp.config.get("interval").and_then(|v| v.as_integer()), Some(30));
+    assert_eq!(totp.config.get("algorithm").and_then(|v| v.as_str()), Some("SHA1"));
 }
 
 #[test]
