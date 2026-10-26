@@ -8,7 +8,7 @@ pub mod model;
 
 use crate::config::PluginConfig;
 use dynamic_lib::{bind_dynamic_libraries, LoadedDynamicLibraries};
-use model::PluginResultItem;
+pub use model::PluginResultItem;
 use rquickjs::{Context, Function, Module, Object, Runtime};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,6 +16,40 @@ use tracing::{error, info, warn};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+thread_local! {
+    static CURRENT_PLUGIN_NAME: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn set_current_plugin(name: Option<String>) {
+    CURRENT_PLUGIN_NAME.with(|cell| {
+        *cell.borrow_mut() = name;
+    });
+}
+
+pub fn get_current_plugin() -> Option<String> {
+    CURRENT_PLUGIN_NAME.with(|cell| cell.borrow().clone())
+}
+
+pub struct PluginContextGuard;
+impl Drop for PluginContextGuard {
+    fn drop(&mut self) {
+        set_current_plugin(None);
+    }
+}
+
+pub fn enter_plugin_context(name: &str) -> PluginContextGuard {
+    set_current_plugin(Some(name.to_string()));
+    PluginContextGuard
+}
+
+pub fn format_plugin_msg(msg: &str) -> String {
+    if let Some(name) = get_current_plugin() {
+        format!("-[{}] {}", name, msg)
+    } else {
+        msg.to_string()
+    }
+}
 
 /// 解析插件目录在磁盘上的实际路径（支持当前工作目录、可执行文件目录、系统 APPDATA 目录）
 pub fn resolve_plugin_dir(path: &std::path::Path) -> PathBuf {
@@ -129,22 +163,22 @@ impl PluginManager {
             let log_obj = Object::new(ctx.clone()).unwrap();
 
             let log_info = Function::new(ctx.clone(), |msg: String| {
-                tracing::info!("{}", msg);
+                tracing::info!("{}", format_plugin_msg(&msg));
                 Ok::<_, rquickjs::Error>(())
             })
             .unwrap();
             let log_warn = Function::new(ctx.clone(), |msg: String| {
-                tracing::warn!("{}", msg);
+                tracing::warn!("{}", format_plugin_msg(&msg));
                 Ok::<_, rquickjs::Error>(())
             })
             .unwrap();
             let log_error = Function::new(ctx.clone(), |msg: String| {
-                tracing::error!("{}", msg);
+                tracing::error!("{}", format_plugin_msg(&msg));
                 Ok::<_, rquickjs::Error>(())
             })
             .unwrap();
             let log_debug = Function::new(ctx.clone(), |msg: String| {
-                tracing::debug!("{}", msg);
+                tracing::debug!("{}", format_plugin_msg(&msg));
                 Ok::<_, rquickjs::Error>(())
             })
             .unwrap();
@@ -207,16 +241,36 @@ impl PluginManager {
                 };
 
                 // 2. 读取 metadata 对象并解析绑定原生动态库
-                let (dyn_libs, default_cfg_opt) = match module.get::<_, Object>("metadata") {
+                let (dyn_libs, default_cfg_opt, meta_name_opt, meta_prefix_opt) = match module.get::<_, Object>("metadata") {
                     Ok(meta) => {
                         let libs = bind_dynamic_libraries(&ctx, &meta, &plugin_dir)?;
                         let def_cfg = meta.get::<_, Object>("default_config").ok();
-                        (libs, def_cfg)
+                        let m_name = meta.get::<_, String>("name").ok();
+                        let m_prefix = meta.get::<_, String>("prefix").ok();
+                        (libs, def_cfg, m_name, m_prefix)
                     }
                     Err(_) => {
                         return Err(format!("插件 [{}] 必须导出 metadata 元信息对象", id));
                     }
                 };
+
+                let final_name = if !cfg_name.is_empty() {
+                    cfg_name
+                } else if let Some(m_name) = meta_name_opt {
+                    m_name
+                } else {
+                    plugin_id.clone()
+                };
+
+                let final_prefix = if !cfg_prefix.is_empty() {
+                    cfg_prefix
+                } else if let Some(m_prefix) = meta_prefix_opt {
+                    m_prefix
+                } else {
+                    String::new()
+                };
+
+                let _guard = enter_plugin_context(&final_name);
 
                 // 3. 构建该插件的合并配置并初始化 JS Object
                 let config_obj = Object::new(ctx.clone()).unwrap();
@@ -294,12 +348,12 @@ impl PluginManager {
                     .map_err(|_| format!("插件 [{}] 缺少必需导出的 on_select(item) 函数", id))?;
                 let _ = ctx.globals().set(format!("__plugin_{}_select", plugin_id), select_fn);
 
-                info!("插件 [{}] 加载就绪，前缀 '{}'", id, cfg_prefix);
+                info!("插件 [{}] 加载就绪，前缀 '{}'", id, final_prefix);
 
                 Ok(LoadedPlugin {
                     id: plugin_id,
-                    name: cfg_name,
-                    prefix: cfg_prefix,
+                    name: final_name,
+                    prefix: final_prefix,
                     dir: plugin_dir.clone(),
                     merged_config,
                     _dyn_libs: dyn_libs,
@@ -344,6 +398,8 @@ impl PluginManager {
 
     /// 向指定插件发起用户输入查询 (on_query)
     pub fn query(&self, plugin_id: &str, input: &str) -> Vec<PluginResultItem> {
+        let plugin_name = self.get_plugin_name(plugin_id);
+        let _guard = enter_plugin_context(&plugin_name);
         self.ctx.with(|ctx| {
             tracing::debug!("向插件 [{}] 派发查询参数: '{}'", plugin_id, input);
             // 同步当前插件对应的配置对象
@@ -419,6 +475,8 @@ impl PluginManager {
 
     /// 用户在列表中选中并确认某项条目时触发选择动作 (on_select)
     pub fn select(&self, plugin_id: &str, item_id: &str, payload: &str) {
+        let plugin_name = self.get_plugin_name(plugin_id);
+        let _guard = enter_plugin_context(&plugin_name);
         self.ctx.with(|ctx| {
             // 复用预置配置引用
             let cfg_key = format!("__plugin_{}_config", plugin_id);

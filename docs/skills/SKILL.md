@@ -479,3 +479,56 @@ export function on_select(item) {
   }
 }
 ```
+
+---
+
+## 7. 开发者与大模型专属命令行调试工具 (CLI Diagnostics)
+
+OneLauncher 提供了专供第三方开发者与 AI 智能体在终端中完全隔离调试插件的命令行模式。在调用时**绝不启动/绘制 GUI 窗口**，直接将查询结果与执行状态结构化返回至终端。
+
+### 7.1 核心命令参数
+
+| 参数 | 缩写 | 说明 |
+| :--- | :--- | :--- |
+| `-plugin <target>` | `-p` | **隔离加载单个插件**：支持指定插件名（如 `clash`、`system`）、插件目录（`plugins/clash`）或入口脚本绝对路径 |
+| `-input "<query>"` | `-i`, `-q` | 指定查询内容（如 `"sys:"`、`"clash: update"`、`""`） |
+| `-select <id\|index>`| `-s` | 查询完成后自动触发指定结果条目的 `on_select` 进行动作测试 |
+| `-debug` | `-d` | 开启调试模式（日志级别自动提升为 `debug`，并输出至控制台） |
+| `-log-out <dest>` | `-l` | 指定日志输出目标，默认为 `'std'`（控制台），可选 `'fs:<path>'` |
+| `-log-level <level>`| 无 | 日志级别：`trace`、`debug`、`info`、`warn`、`error`、`silent` |
+| `-format <text\|json>`| `-f` | 结果输出格式：`text`（默认易读文本）或 `json`（结构化 JSON，便于大模型与脚本解析） |
+| `-config <path>` | `-c` | 指定自定义 `config.toml` 文件路径 |
+| `-help` | `-h`, `/?` | 查看完整的命令行帮助指南 |
+
+### 7.2 插件日志标识与结果输出规范
+
+1. **自动前缀标识**：插件通过 `console.log`、`console.info`、`console.warn`、`console.error` 或 `launcher.log` 输出的每条日志，宿主都会自动加上当前插件名称的前缀（例如 `-[Clash 控制器] 正在请求订阅...` 或 `-[系统管理] 退出程序`）。
+2. **结果与日志明确分隔**：宿主查询结果被严格置于专用的分界线块内，便于大模型和开发者提取与核验：
+
+```text
+======================== ONELAUNCHER RESULTS ========================
+Plugin:   Clash 控制器 (id: clash, prefix: 'clash:')
+Input:    "update"
+Count:    1 item(s)
+
+  [0] Update Subscription
+      Subtitle: 备份并下载最新订阅 (当前: 10 秒前更新)
+      Badge:    Clash
+      Icon:     info
+      Id:       update-subscription
+      Payload:  {"action":"update-subscription"}
+
+=====================================================================
+```
+
+### 7.3 大模型调试插件的标准命令模式
+
+- **验证空输入菜单补全**：
+  `one-launcher -plugin system -input "sys:"`
+- **验证搜索过滤与结果内容**：
+  `one-launcher -plugin clash -input "update"`
+- **以 JSON 格式快速获取结果数据**：
+  `one-launcher -plugin system -input "sys: q" -format json`
+- **全链路测试回车执行 (on_select)**：
+  `one-launcher -debug -plugin clash -input "clash: sub" -select subscription-time`
+
