@@ -13,8 +13,8 @@ export const metadata = {
 
 let totpIcon = "shield";
 
-export function on_setup(context) {
-  totpIcon = "shield";
+export function on_setup() {
+  totpIcon = launcher.cache_icon("shield");
   console.info("TOTP 动态验证码插件已就绪");
 }
 

@@ -10,10 +10,10 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 
 | 指标维度 | 目标设计值 | 当前实际测量值 | 架构保障措施 |
 | :--- | :--- | :--- | :--- |
-| **可执行文件体积** | < 3.0 MB | **~2.93 MB** (Release 构建) | 剔除重型三方依赖，完全基于 Windows 原生 Win32 API 与嵌入式 QuickJS |
+| **可执行文件体积** | < 4.0 MB | **~3.2 MB** (Release 构建) | 剔除重型 Web/UI 运行时，基于 Windows 原生 Win32 API + QuickJS + Reqwest |
 | **运行时内存占用** | 8 MB ~ 15 MB | **~10.5 MB** (常驻就绪) | 纯 GDI 内存双缓冲渲染，零 WebView / Electron / Direct2D 额外运行层 |
 | **全局呼出延迟** | < 16 ms (瞬时显示) | **< 5 ms** | 原生 `RegisterHotKey` 配合无边框 Win32 窗口快速位图贴图 |
-| **插件线程隔离** | 零 UI 阻塞 | **完全隔离** | 专用插件 Worker 线程串行执行 QuickJS，MPSC 通道防抖派发 |
+| **插件沙箱隔离** | 独立 Context 隔离 | **完全隔离** | 每个插件分配专属独立 QuickJS Context，互不污染全局变量与状态 |
 
 ---
 
@@ -39,15 +39,20 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        src/plugin (插件宿主系统)                       │
-│ - QuickJS (ES2020) 虚拟机 + 独立 Worker 线程                           │
-│ - 线程局部日志前缀识别: -[<Plugin Name>]                              │
-│ - 宿主注入能力 (launcher.*):                                           │
+│ - QuickJS (ES2020) 引擎 + 专用 Worker 线程                             │
+│ - 每插件独立 Context 隔离: 专属 globalThis，杜绝变量泄漏与跨插件污染   │
+│ - 共享 Rust Core API 网关 (launcher.*，无状态纯 API):                  │
 │   ├─ launcher.fs: 原生 Win32 同步/二进制文件系统 API                   │
-│   ├─ launcher.http & fetch: 原生 WinHttp 高性能网络客户端               │
+│   ├─ launcher.http & fetch: 基于第三方成熟库 reqwest 的完整网络客户端   │
 │   ├─ launcher.shell: exec, batch_exec, spawn, open, UAC 提权/auto_sudo │
 │   ├─ launcher.env: 进程环境变量读写与代理                              │
 │   ├─ launcher.app: quit, reload, edit_config, message_box 原生弹窗     │
-│   └─ launcher.clipboard: 系统剪贴板读写                                │
+│   ├─ launcher.clipboard: 系统剪贴板读写                                │
+│   └─ launcher.cache_icon: 图标提取与注册入池                           │
+│ - 插件私有上下文 (self / context):                                     │
+│   ├─ self.get_config() / self.config: 插件私有合并配置                 │
+│   ├─ self.id, self.name, self.prefix, self.dir                         │
+│   └─ self.cache_icon: 相对路径自动解析                                 │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -64,19 +69,21 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 
 ## 3. 核心子系统设计
 
-### 3.1 插件系统与宿主扩展 (`src/plugin/`)
-1. **线程隔离与防抖模型**：
-   - 界面线程捕获输入后，根据配置中的 `plugin_debounce_ms` 防抖计时。
-   - 输入就绪后通过 MPSC 通道向后台专用 Worker 线程派发查询请求，主 UI 线程绝不等待插件执行结果。
+### 3.1 插件系统与上下文隔离架构 (`src/plugin/`)
+1. **多 Context 完全隔离与共享 API 分离**：
+   - **共享 API 网关 (`launcher`)**：`launcher` 作为纯净的程序能力接口接入点（API Gateway），绑定至共享 Rust 核心，提供文件操作、网络请求、进程与提权命令、剪贴板、系统管理及图标缓存能力。`launcher` 不包含任何插件私有状态或私有 `config`。
+   - **插件私有上下文 (`self` / `context`)**：每个插件在初始化阶段都会在 QuickJS Runtime 内获得专属独立的 `Context`。在此 Context 中注入专属于该插件的 `self` 对象（别名 `context`），提供 `self.get_config()`、`self.config`、`self.id`、`self.name`、`self.prefix`、`self.dir`。各插件的全局变量与模块状态 100% 物理隔离，杜绝全局作用域污染。
 2. **生命周期规范**：
    - `metadata`: 声明插件名、前缀（`prefix`）、默认配置（`default_config`）与 FFI 声明。
-   - `on_setup(context)`: 初始化与图标注册。
+   - `on_setup()`: **无参设计**，插件首次加载时执行一次。图标直接通过 `launcher.cache_icon(...)` 或 `self.cache_icon(...)` 注册。
    - `on_query(input)`: 同步极速过滤，必须返回 `SearchResultItem` 数组，每个条目必需包含 `badge` 标识。
    - `on_select(item)`: 确认触发动作，执行网络、文件或系统管理。
-3. **UAC 提权与批处理执行**：
+3. **HTTP 网络请求能力**：
+   - 采用成熟三方库 `reqwest`（阻塞式 Blocking 客户端），原生支持 HTTPS、系统根证书信任链、智能重定向与代理穿透，提供 `launcher.http.get/post/request` 以及 `launcher.fetch` 全局别名。
+4. **UAC 提权与批处理执行**：
    - `launcher.shell.exec` 支持 `sudo: true` 单次弹出 UAC 提权窗口；支持 `auto_sudo: true` 在非提权失败后自动提权重试。
    - `launcher.shell.batch_exec` 将多个指令（如批量注册表写入）打包合并为单次提权批处理会话，杜绝多次 UAC 弹窗打扰。
-4. **日志前缀自动识别**：
+5. **日志前缀自动识别**：
    - 通过线程局部 RAII 上下文 `enter_plugin_context`，插件脚本内的 `console.log` 及宿主代理日志自动附带当前插件名标签（如 `-[Clash 控制器] ...`）。
 
 ### 3.2 命令行调试与隔离诊断系统 (`src/cli/`)
@@ -114,17 +121,18 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 ## 5. 当前开发进度与里程碑总结
 
 - [x] **基础设施重构与体积优化**：
-  - 核心架构完成，Release 单文件编译体积控制在 2.93 MB。
+  - 核心架构稳定，单文件 Release 编译体积控制在 ~3.2 MB。
   - 内存占用控制在 10MB 左右。
+- [x] **插件 HTTP 引擎第三方库重构**：
+  - 引入成熟三方网络库 `reqwest`，替换原本基于 Windows 原生 WinHttp 的底层实现，提供高可靠的 HTTPS 连接、证书验证与重定向支持。
+- [x] **插件上下文隔离与 Rust Core API 共享重构**：
+  - `launcher` 保持为纯净的全局共享 API 接入点，完全剥离私有 `config`。
+  - 插件分配独立隔离的 QuickJS Context，互相之间全局变量与状态彻底隔离。
+  - 引入 `self` / `context` 插件私有上下文对象，通过 `self.get_config()` 获取自有配置。
+  - `on_setup` 改为无参设计，`cache_icon` 整合至 `launcher` 与 `self`。
 - [x] **配置清理与简化**：
   - 移除无用外观配置，精简 `AppearanceConfig`。
   - 插件 `PluginConfig.path` 设为可选，默认解析回退到 `plugins/<plugin-id>`。
-- [x] **插件宿主能力扩展**：
-  - 完成 `launcher.fs` 原生 Win32 文件读写、属性、遍历 API。
-  - 完成 `launcher.http` / `fetch` 基于 Windows WinHttp 原生客户端实现。
-  - 完成 `launcher.shell.exec` / `batch_exec`，支持 UAC 提权 (`sudo`) 与失败自动单次提权重试 (`auto_sudo`)。
-  - 完成 `launcher.env` 环境变量操作与动态代理。
-  - 完成 `launcher.app` 原生弹窗与生命周期控制。
 - [x] **输入防抖与空前缀响应修复**：
   - 解决 `sys:`、`clash:` 等仅敲击前缀或带空格时无候选返回的问题。
   - 调整为空输入时立即返回全量动作列表。
@@ -136,5 +144,5 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
   - 统一建立 `docs/skills/SKILL.md`，规范化生命周期、能力矩阵、自查清单与调试指南。
   - 移除冗余的 `plugin_development_guide.md`，文档唯一维护。
 - [x] **质量与自动化测试**：
-  - 覆盖率完备（涵盖配置解析、热键、应用索引模糊匹配、QuickJS 插件生命周期、各官方插件业务逻辑、CLI 隔离执行、宿主文件/HTTP能力）。
-  - 全套 13 组测试套件 100% 通过，0 编译警告。
+  - 涵盖配置解析、热键、应用索引模糊匹配、QuickJS 插件生命周期与 Context 隔离、各官方插件业务逻辑、CLI 隔离执行、宿主文件/HTTP能力。
+  - 全套 13 组测试套件 19 个用例 100% 通过，0 编译警告。

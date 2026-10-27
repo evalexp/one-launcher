@@ -87,20 +87,21 @@ export const metadata = {
 
 ---
 
-### 3.2 `export function on_setup(context)` (可选)
+### 3.2 `export function on_setup()` (可选，无参)
 
 插件首次加载或重新载入时触发一次。
 
-- **入参**：`context` 初始化上下文对象：
-  - `context.cache_icon(path_or_bytes): string`：将本地相对/绝对路径图片文件，或内存二进制数据（`ArrayBuffer` / `Uint8Array`）存入宿主图标池，返回唯一的图标 `ref_id`。
+> [!NOTE]
+> `on_setup` 为**无参调用**。自定义图标可通过全局共享网关 `launcher.cache_icon(...)` 或插件自有上下文 `self.cache_icon(...)` 进行缓存注册。
 
 ```javascript
 let myIconId = "gear";
 
-export function on_setup(context) {
+export function on_setup() {
   try {
-    myIconId = context.cache_icon("./icon.png");
-    console.info("插件初始化成功，已缓存自定义图标");
+    myIconId = launcher.cache_icon("./icon.png");
+    const cfg = self.get_config();
+    console.info("插件初始化成功，当前配置: ", cfg);
   } catch (err) {
     console.warn("缓存图标失败，使用后备图标: " + err);
   }
@@ -109,7 +110,31 @@ export function on_setup(context) {
 
 ---
 
-### 3.3 `export function on_query(input)` (必需)
+### 3.3 插件隔离上下文 (`self` / `context`)
+
+每个插件均运行于宿主为其创建的**独立隔离 QuickJS Context** 中，彻底避免多插件全局作用域与变量污染。
+
+插件可直接通过 `self`（或同义别名 `context`）访问专属实例上下文信息与私有配置：
+
+| 属性 / 方法 | 返回类型 | 说明 |
+| :--- | :--- | :--- |
+| `self.get_config()` | `object` | 获取插件最终合并配置（`metadata.default_config` + `config.toml`） |
+| `self.config` | `object` | 配置对象的直接属性引用（等价于 `self.get_config()`） |
+| `self.get_id()` / `self.id` | `string` | 插件在宿主系统中的唯一标识 ID（如 `"clash"`） |
+| `self.get_name()` / `self.name` | `string` | 插件显示名称 |
+| `self.get_prefix()` / `self.prefix` | `string` | 插件独占触发前缀（如 `"clash:"`） |
+| `self.get_dir()` / `self.dir` | `string` | 插件本地所在目录绝对/相对路径 |
+| `self.cache_icon(path_or_bytes)` | `string` | 本地或二进制图标注册（自动基于当前插件目录解析相对路径） |
+
+```javascript
+// 在插件任何函数中均可直接安全访问自己的配置
+const cfg = self.get_config();
+console.info("插件 ID: " + self.id + "，超时设置: " + cfg.timeout);
+```
+
+---
+
+### 3.4 `export function on_query(input)` (必需)
 
 当用户输入匹配前缀且满足防抖间隔时由宿主调用。
 
@@ -177,9 +202,24 @@ export function on_select(item) {
 
 ## 4. 宿主能力矩阵 (`launcher.*`)
 
-宿主在 QuickJS 顶层预先注入了完整的 Windows 原生能力对象 `launcher`：
+宿主在 QuickJS 顶层预先注入了全局共享 API 网关 `launcher`。`launcher` 保持为纯净的共享 API 接入点，不携带任何插件私有配置（插件配置统一通过 `self.get_config()` 获取）。
 
-### 4.1 文件系统操作 (`launcher.fs`)
+### 4.1 图标注册 (`launcher.cache_icon`)
+
+```javascript
+// 1. 注册预设矢量图标（直接返回预设 ID，如 "calc", "shield", "file", "folder", "gear" 等）
+const iconId = launcher.cache_icon("shield");
+
+// 2. 从本地相对/绝对路径注册自定义图片
+const customIcon = launcher.cache_icon("./icon.png");
+
+// 3. 从内存二进制 Buffer 注册
+const bufIcon = launcher.cache_icon(imageBuffer);
+```
+
+---
+
+### 4.2 文件系统操作 (`launcher.fs`)
 
 基于 Windows 原生 Win32 API（`CopyFileW`、`MoveFileExW`、`DeleteFileW`）封装，原生支持二进制 Buffer：
 
@@ -220,9 +260,9 @@ const stat = launcher.fs.stat("C:/boot.ini");
 
 ---
 
-### 4.2 网络请求 (`launcher.http` 与全局 `fetch`)
+### 4.3 网络请求 (`launcher.http` 与全局 `fetch`)
 
-基于 Windows 原生 `WinHttp`（`winhttp.dll`）实现，零外部依赖，支持 HTTPS 与重定向：
+基于 Rust 成熟网络库 `reqwest` 实现，支持完整 HTTPS、系统证书与智能重定向：
 
 ```javascript
 // 方式一：全局标准 fetch API
@@ -249,7 +289,7 @@ const postRes = launcher.http.post("http://127.0.0.1:9090/configs?force=true", "
 
 ---
 
-### 4.3 命令与外部进程 (`launcher.shell` & `launcher.process`)
+### 4.4 命令与外部进程 (`launcher.shell` & `launcher.process`)
 
 支持静默控制台执行、批处理、UAC 单次提权以及失败自动重试机制。
 
@@ -321,7 +361,7 @@ launcher.shell.open("C:/Users");
 
 ---
 
-### 4.4 环境变量操作 (`launcher.env`)
+### 4.5 环境变量操作 (`launcher.env`)
 
 ```javascript
 // 读取环境变量
@@ -341,7 +381,7 @@ const allEnv = launcher.env.all();
 
 ---
 
-### 4.5 宿主应用控制与消息弹窗 (`launcher.app`)
+### 4.6 宿主应用控制与消息弹窗 (`launcher.app`)
 
 ```javascript
 // 1. 弹出系统原生 MessageBoxW 弹窗
@@ -361,7 +401,7 @@ const cfgPath = launcher.app.config_path(); // 获取 config.toml 绝对路径
 
 ---
 
-### 4.6 剪贴板操作 (`launcher.clipboard`)
+### 4.7 剪贴板操作 (`launcher.clipboard`)
 
 ```javascript
 launcher.clipboard.write_text("需要拷贝的字符串");
@@ -370,7 +410,7 @@ launcher.clipboard.write("别名方法");
 
 ---
 
-### 4.7 控制台日志 (`console`)
+### 4.8 控制台日志 (`console`)
 
 QuickJS 中的 `console` 已桥接至 Rust 原生 `tracing` 日志引擎，支持日志级别输出：
 

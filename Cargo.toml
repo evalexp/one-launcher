@@ -27,6 +27,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rquickjs = "0.14.0"
 libloading = "0.9.0"
 
+# 网络请求
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "default-tls"] }
+
 # Windows 原生 API 绑定
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
@@ -46,7 +49,6 @@ features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
-    "Win32_Networking_WinHttp",
     "Win32_Globalization",
 ]
 

@@ -10,12 +10,12 @@ export const metadata = {
 let calcIcon = "calc";
 
 /**
- * 插件初始化
- * @param {Object} context 包含 context.cache_icon 用于图标缓存
+ * 插件初始化生命周期 (无参)
  */
-export function on_setup(context) {
-  calcIcon = "calc";
-  console.info(`Calculator 插件已就绪 (精度: ${(launcher.config && launcher.config.precision) || 6})`);
+export function on_setup() {
+  calcIcon = launcher.cache_icon("calc");
+  const cfg = self.get_config();
+  console.info(`Calculator 插件已就绪 (精度: ${(cfg && cfg.precision) || 6})`);
 }
 
 /**
@@ -29,7 +29,8 @@ export function on_query(input) {
   }
 
   const raw = input.trim();
-  const precision = (launcher.config && launcher.config.precision) || 6;
+  const cfg = self.get_config();
+  const precision = (cfg && cfg.precision) || 6;
   const result = evaluateMath(raw, precision);
 
   if (result === null) {

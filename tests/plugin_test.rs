@@ -24,14 +24,15 @@ fn test_plugin_strict_lifecycle_and_default_config() {
         let setupCalled = false;
         let testIconRef = "file";
 
-        export function on_setup(context) {
+        export function on_setup() {
             setupCalled = true;
-            console.info("on_setup 测试通过, 当前 multiplier: " + (launcher.config && launcher.config.multiplier));
+            const cfg = self.get_config();
+            console.info("on_setup 测试通过, 当前 multiplier: " + (cfg && cfg.multiplier));
             testIconRef = "terminal";
         }
 
         export function on_query(input) {
-            const mult = (launcher.config && launcher.config.multiplier) || 1;
+            const mult = (self.get_config() && self.get_config().multiplier) || 1;
             return [
                 { id: "1", title: "Result: " + (Number(input) * mult), subtitle: "计算完成", icon: testIconRef, badge: "乘法测试", payload: { res: Number(input) * mult } }
             ];
@@ -99,6 +100,103 @@ fn test_plugin_strict_lifecycle_and_default_config() {
     assert_eq!(results[0].title, "Result: 50"); // 5 * 10 (来自 default_config)
     assert_eq!(results[0].icon, "terminal"); // 来自 on_setup 中的初始化赋值
     assert_eq!(results[0].badge, "乘法测试"); // 来自 on_query 返回的 badge 字段
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_plugin_context_isolation_and_shared_launcher_apis() {
+    let temp_dir = std::env::temp_dir().join(format!("one_launcher_isolation_test_{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+
+    // 插件 A: 具有独立 config a_val = 111, 定义全局变量 leak_test = "plugin_A"
+    let p_a_dir = temp_dir.join("plugin_a");
+    fs::create_dir_all(&p_a_dir).unwrap();
+    let code_a = r#"
+        globalThis.leak_test = "plugin_A";
+        export const metadata = {
+            name: "插件A",
+            prefix: "a:",
+            default_config: { a_val: 111 }
+        };
+        export function on_setup() {
+            // 验证 launcher 保持为纯净共享 API，不携带私有 config
+            if (typeof launcher.config !== "undefined") {
+                throw new Error("launcher.config 必须为 undefined");
+            }
+        }
+        export function on_query(input) {
+            const cfg = self.get_config();
+            return [{
+                id: "item_a",
+                title: "A:" + cfg.a_val + ":" + globalThis.leak_test,
+                subtitle: "context:" + context.get_id(),
+                icon: "file",
+                badge: "A",
+                payload: {}
+            }];
+        }
+        export function on_select(item) {}
+    "#;
+    fs::write(p_a_dir.join("index.js"), code_a).unwrap();
+
+    // 插件 B: 具有独立 config b_val = 222, 验证 globalThis.leak_test 不存在
+    let p_b_dir = temp_dir.join("plugin_b");
+    fs::create_dir_all(&p_b_dir).unwrap();
+    let code_b = r#"
+        export const metadata = {
+            name: "插件B",
+            prefix: "b:",
+            default_config: { b_val: 222 }
+        };
+        export function on_setup() {}
+        export function on_query(input) {
+            const cfg = self.get_config();
+            const leaked = typeof globalThis.leak_test !== "undefined" ? globalThis.leak_test : "none";
+            return [{
+                id: "item_b",
+                title: "B:" + cfg.b_val + ":" + leaked,
+                subtitle: "self:" + self.get_id(),
+                icon: "file",
+                badge: "B",
+                payload: {}
+            }];
+        }
+        export function on_select(item) {}
+    "#;
+    fs::write(p_b_dir.join("index.js"), code_b).unwrap();
+
+    let mut plugins = HashMap::new();
+    plugins.insert("p_a".to_string(), PluginConfig {
+        enabled: true,
+        prefix: "a:".to_string(),
+        name: "插件A".to_string(),
+        path: Some(p_a_dir),
+        entry: "index.js".to_string(),
+        config: toml::Table::new(),
+    });
+    plugins.insert("p_b".to_string(), PluginConfig {
+        enabled: true,
+        prefix: "b:".to_string(),
+        name: "插件B".to_string(),
+        path: Some(p_b_dir),
+        entry: "index.js".to_string(),
+        config: toml::Table::new(),
+    });
+
+    let mgr = PluginManager::init(&plugins);
+
+    // 查询 A
+    let res_a = mgr.query("p_a", "");
+    assert_eq!(res_a.len(), 1);
+    assert_eq!(res_a[0].title, "A:111:plugin_A");
+    assert_eq!(res_a[0].subtitle, "context:p_a");
+
+    // 查询 B: 验证完全隔离，未被 A 的全局变量污染，且获取自己的 config 222
+    let res_b = mgr.query("p_b", "");
+    assert_eq!(res_b.len(), 1);
+    assert_eq!(res_b[0].title, "B:222:none");
+    assert_eq!(res_b[0].subtitle, "self:p_b");
 
     let _ = fs::remove_dir_all(&temp_dir);
 }

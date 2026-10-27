@@ -2,57 +2,9 @@ use crate::plugin::host_fs::extract_bytes;
 use rquickjs::function::Opt;
 use rquickjs::{ArrayBuffer, Ctx, Function, Object, Value};
 use std::collections::HashMap;
-use std::ffi::c_void;
-use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Networking::WinHttp::*;
+use std::time::Duration;
 
-/// RAII 守护句柄，在析构时安全关闭 WinHttp 句柄
-struct AutoClose(*mut c_void);
-
-impl Drop for AutoClose {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                let _ = WinHttpCloseHandle(self.0);
-            }
-        }
-    }
-}
-
-/// 解析 URL 为 scheme, host, port, path_and_query
-fn parse_url(url: &str) -> Result<(bool, String, u16, String), String> {
-    let (is_https, rest) = if let Some(stripped) = url.strip_prefix("https://") {
-        (true, stripped)
-    } else if let Some(stripped) = url.strip_prefix("http://") {
-        (false, stripped)
-    } else {
-        return Err(format!("不支持的 URL 协议头 (仅支持 http:// 或 https://): {}", url));
-    };
-
-    let (host_port, path) = match rest.find(['/', '?']) {
-        Some(idx) => (&rest[..idx], &rest[idx..]),
-        None => (rest, "/"),
-    };
-
-    let (host, port) = match host_port.find(':') {
-        Some(idx) => {
-            let h = &host_port[..idx];
-            let p = host_port[idx + 1..]
-                .parse::<u16>()
-                .map_err(|_| format!("非法端口号: {}", &host_port[idx + 1..]))?;
-            (h.to_string(), p)
-        }
-        None => (host_port.to_string(), if is_https { 443 } else { 80 }),
-    };
-
-    if host.is_empty() {
-        return Err("URL 中缺少主机域名".to_string());
-    }
-
-    Ok((is_https, host, port, path.to_string()))
-}
-
-/// 发起原生 WinHttp 请求
+/// 发起 HTTP 同步请求（基于第三方 reqwest 客户端库）
 pub fn perform_http_request(
     url: &str,
     method: &str,
@@ -60,191 +12,60 @@ pub fn perform_http_request(
     body: &[u8],
     timeout_ms: u32,
 ) -> Result<(u32, String, HashMap<String, String>, Vec<u8>), String> {
-    let (is_https, host, port, path) = parse_url(url)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms as u64))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-    unsafe {
-        let ua = HSTRING::from("OneLauncher/1.0");
-        let session = WinHttpOpen(
-            PCWSTR(ua.as_ptr()),
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            PCWSTR::null(),
-            PCWSTR::null(),
-            0,
-        );
-        if session.is_null() {
-            return Err("创建 WinHttp Session 失败".to_string());
+    let http_method = match method.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
+        "HEAD" => reqwest::Method::HEAD,
+        "OPTIONS" => reqwest::Method::OPTIONS,
+        other => reqwest::Method::from_bytes(other.as_bytes())
+            .map_err(|e| format!("不支持的 HTTP 方法 {}: {}", other, e))?,
+    };
+
+    let mut builder = client.request(http_method, url);
+
+    for (k, v) in headers {
+        if let (Ok(name), Ok(val)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, val);
         }
-        let _session_guard = AutoClose(session);
-
-        let host_w = HSTRING::from(host);
-        let connect = WinHttpConnect(session, PCWSTR(host_w.as_ptr()), port, 0);
-        if connect.is_null() {
-            return Err("WinHttp 连接目标主机失败".to_string());
-        }
-        let _connect_guard = AutoClose(connect);
-
-        let verb_w = HSTRING::from(method.to_uppercase());
-        let path_w = HSTRING::from(path);
-        let flags = if is_https {
-            WINHTTP_FLAG_SECURE
-        } else {
-            WINHTTP_OPEN_REQUEST_FLAGS(0)
-        };
-
-        let request = WinHttpOpenRequest(
-            connect,
-            PCWSTR(verb_w.as_ptr()),
-            PCWSTR(path_w.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            std::ptr::null(),
-            flags,
-        );
-        if request.is_null() {
-            return Err("创建 WinHttp Request 失败".to_string());
-        }
-        let _request_guard = AutoClose(request);
-
-        let _ = WinHttpSetTimeouts(
-            request,
-            timeout_ms as i32,
-            timeout_ms as i32,
-            timeout_ms as i32,
-            timeout_ms as i32,
-        );
-
-        let mut headers_string = String::new();
-        for (k, v) in headers {
-            headers_string.push_str(&format!("{}: {}\r\n", k, v));
-        }
-        let headers_w = HSTRING::from(headers_string);
-
-        let headers_slice = if headers_w.is_empty() {
-            None
-        } else {
-            Some(headers_w.as_wide())
-        };
-
-        let body_opt = if body.is_empty() {
-            None
-        } else {
-            Some(body.as_ptr() as *const c_void)
-        };
-
-        if WinHttpSendRequest(
-            request,
-            headers_slice,
-            body_opt,
-            body.len() as u32,
-            body.len() as u32,
-            0,
-        )
-        .is_err()
-        {
-            return Err("WinHttp 发送网络请求失败".to_string());
-        }
-
-        if WinHttpReceiveResponse(request, std::ptr::null_mut()).is_err() {
-            return Err("WinHttp 接收网络响应失败".to_string());
-        }
-
-        let mut status_code: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        let _ = WinHttpQueryHeaders(
-            request,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            PCWSTR::null(),
-            Some(&mut status_code as *mut _ as *mut c_void),
-            &mut size,
-            std::ptr::null_mut(),
-        );
-
-        let mut text_size: u32 = 0;
-        let _ = WinHttpQueryHeaders(
-            request,
-            WINHTTP_QUERY_STATUS_TEXT,
-            PCWSTR::null(),
-            None,
-            &mut text_size,
-            std::ptr::null_mut(),
-        );
-        let mut status_text = String::new();
-        if text_size > 0 {
-            let count = (text_size as usize / 2) + 1;
-            let mut wide = vec![0u16; count];
-            if WinHttpQueryHeaders(
-                request,
-                WINHTTP_QUERY_STATUS_TEXT,
-                PCWSTR::null(),
-                Some(wide.as_mut_ptr() as *mut c_void),
-                &mut text_size,
-                std::ptr::null_mut(),
-            )
-            .is_ok()
-            {
-                status_text = String::from_utf16_lossy(&wide)
-                    .trim_end_matches('\0')
-                    .to_string();
-            }
-        }
-
-        let mut headers_size: u32 = 0;
-        let _ = WinHttpQueryHeaders(
-            request,
-            WINHTTP_QUERY_RAW_HEADERS_CRLF,
-            PCWSTR::null(),
-            None,
-            &mut headers_size,
-            std::ptr::null_mut(),
-        );
-        let mut headers_map = HashMap::new();
-        if headers_size > 0 {
-            let count = (headers_size as usize / 2) + 1;
-            let mut wide = vec![0u16; count];
-            if WinHttpQueryHeaders(
-                request,
-                WINHTTP_QUERY_RAW_HEADERS_CRLF,
-                PCWSTR::null(),
-                Some(wide.as_mut_ptr() as *mut c_void),
-                &mut headers_size,
-                std::ptr::null_mut(),
-            )
-            .is_ok()
-            {
-                let raw = String::from_utf16_lossy(&wide);
-                for line in raw.lines() {
-                    if let Some((k, v)) = line.split_once(':') {
-                        headers_map.insert(k.trim().to_lowercase(), v.trim().to_string());
-                    }
-                }
-            }
-        }
-
-        let mut response_body = Vec::new();
-        loop {
-            let mut available: u32 = 0;
-            if WinHttpQueryDataAvailable(request, &mut available).is_err() || available == 0 {
-                break;
-            }
-            let mut chunk = vec![0u8; available as usize];
-            let mut read_bytes: u32 = 0;
-            if WinHttpReadData(
-                request,
-                chunk.as_mut_ptr() as *mut c_void,
-                available,
-                &mut read_bytes,
-            )
-            .is_ok()
-                && read_bytes > 0
-            {
-                response_body.extend_from_slice(&chunk[..read_bytes as usize]);
-            } else {
-                break;
-            }
-        }
-
-        Ok((status_code, status_text, headers_map, response_body))
     }
+
+    if !body.is_empty() {
+        builder = builder.body(body.to_vec());
+    }
+
+    let resp = builder.send().map_err(|e| format!("HTTP 请求失败: {}", e))?;
+
+    let status = resp.status().as_u16() as u32;
+    let status_text = resp
+        .status()
+        .canonical_reason()
+        .unwrap_or("OK")
+        .to_string();
+
+    let mut resp_headers = HashMap::new();
+    for (name, val) in resp.headers() {
+        if let Ok(v_str) = val.to_str() {
+            resp_headers.insert(name.as_str().to_lowercase(), v_str.to_string());
+        }
+    }
+
+    let resp_bytes = resp
+        .bytes()
+        .map_err(|e| format!("读取 HTTP 响应数据失败: {}", e))?
+        .to_vec();
+
+    Ok((status, status_text, resp_headers, resp_bytes))
 }
 
 /// 将 HTTP 结果打包为标准 JavaScript Response 对象
@@ -267,7 +88,7 @@ fn build_js_response<'js>(
     res_obj.set("headers", headers_obj)?;
 
     let body_str = String::from_utf8_lossy(&body).into_owned();
-    res_obj.set("body", body_str.clone())?;
+    res_obj.set("body", body_str)?;
 
     let buffer = ArrayBuffer::new_copy(ctx.clone(), &body)?;
     res_obj.set("buffer", buffer)?;
@@ -287,7 +108,7 @@ fn build_js_response<'js>(
     Ok(res_obj)
 }
 
-/// 向 launcher 注册原生 HTTP 请求模块与全局 fetch
+/// 向 launcher 注册 HTTP 请求模块与全局 fetch
 pub fn register_http<'js>(ctx: &Ctx<'js>, launcher: &Object<'js>) -> Result<(), rquickjs::Error> {
     let http_obj = Object::new(ctx.clone())?;
 
@@ -325,7 +146,7 @@ pub fn register_http<'js>(ctx: &Ctx<'js>, launcher: &Object<'js>) -> Result<(), 
             }
         }
     })?;
-    http_obj.set("request", request_fn.clone())?;
+    http_obj.set("request", request_fn)?;
 
     // launcher.http.get(url, options?) -> Response
     let get_fn = Function::new(

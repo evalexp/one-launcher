@@ -23,12 +23,11 @@ let fileIconRef = "file";
 let folderIconRef = "folder";
 
 /**
- * 插件初始化
- * @param {Object} context 包含 context.cache_icon 用于图标缓存
+ * 插件初始化生命周期 (无参)
  */
-export function on_setup(context) {
-  fileIconRef = "file";
-  folderIconRef = "folder";
+export function on_setup() {
+  fileIconRef = launcher.cache_icon("file");
+  folderIconRef = launcher.cache_icon("folder");
   console.info("Everything 插件已就绪");
 }
 
@@ -79,7 +78,8 @@ export function on_query(input) {
     return [];
   }
 
-  const maxResults = (launcher.config && launcher.config.max_results) || 9;
+  const cfg = self.get_config();
+  const maxResults = (cfg && cfg.max_results) || 9;
   const count = Math.min(total, maxResults);
   const items = [];
 

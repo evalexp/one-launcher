@@ -84,14 +84,129 @@ pub struct LoadedPlugin {
     pub name: String,
     pub prefix: String,
     pub dir: PathBuf,
+    /// 插件专属完全隔离的 QuickJS Context
+    pub ctx: Context,
     pub merged_config: HashMap<String, toml::Value>,
     pub _dyn_libs: LoadedDynamicLibraries,
 }
 
 pub struct PluginManager {
-    _rt: Runtime,
-    ctx: Context,
     pub plugins: Vec<LoadedPlugin>,
+    _rt: Runtime,
+}
+
+impl Drop for PluginManager {
+    fn drop(&mut self) {
+        self.plugins.clear();
+    }
+}
+
+/// 为插件 Context 注册全局 Rust Core 共享能力 (launcher API 网关与 console)
+pub fn setup_shared_launcher_apis<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    hwnd: isize,
+    config_path: PathBuf,
+    plugin_dir: &std::path::Path,
+) -> Result<Object<'js>, rquickjs::Error> {
+    let launcher = Object::new(ctx.clone())?;
+    let shell = Object::new(ctx.clone())?;
+    let clipboard = Object::new(ctx.clone())?;
+
+    // launcher.shell.open(path)
+    let open_fn = Function::new(ctx.clone(), |path: String| {
+        open_system_path(&path);
+        Ok::<_, rquickjs::Error>(())
+    })?;
+    shell.set("open", open_fn)?;
+
+    // 注册命令行与外部进程能力 (launcher.shell.exec / spawn 与 launcher.process，支持 sudo 提权与 batch_exec)
+    let _ = host_process::register_process(ctx, &launcher, &shell, hwnd);
+    launcher.set("shell", shell)?;
+
+    // 注册原生文件系统操作能力 (launcher.fs)
+    let _ = host_fs::register_fs(ctx, &launcher);
+
+    // 注册 HTTP 网络请求能力 (launcher.http 与 fetch，基于 reqwest)
+    let _ = host_http::register_http(ctx, &launcher);
+
+    // 注册环境变量操作能力 (launcher.env)
+    let _ = host_env::register_env(ctx, &launcher);
+
+    // 注册应用生命周期与配置管理能力 (launcher.app)
+    let _ = host_app::register_app(ctx, &launcher, hwnd, config_path);
+
+    // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
+    let copy_fn = Function::new(ctx.clone(), |text: String| {
+        set_clipboard_text(&text);
+        Ok::<_, rquickjs::Error>(())
+    })?;
+    clipboard.set("write_text", copy_fn.clone())?;
+    clipboard.set("write", copy_fn)?;
+    launcher.set("clipboard", clipboard)?;
+
+    // 注入核心 launcher.cache_icon(path_or_bytes)
+    let p_dir = plugin_dir.to_path_buf();
+    let cache_icon_fn = Function::new(ctx.clone(), move |val: rquickjs::Value| {
+        // 1. 如果传入的是字符串，优先匹配内置预设矢量图标 ID
+        if let Some(s) = val.as_string() {
+            if let Ok(st) = s.to_string() {
+                let lower = st.to_lowercase();
+                match lower.as_str() {
+                    "folder" | "dir" | "file" | "doc" | "error" | "success" | "warn"
+                    | "warning" | "info" | "calc" | "terminal" | "cmd" | "settings"
+                    | "gear" | "notepad" | "shield" | "key" => return Ok::<_, rquickjs::Error>(st),
+                    _ => {}
+                }
+            }
+        }
+
+        // 2. 尝试从本地相对/绝对文件路径或内存字节提取并缓存
+        let ref_id = match extract_icon_bytes(&val, &p_dir) {
+            Some(bytes) => crate::ui::icon_extractor::cache_icon_from_bytes(&bytes)
+                .unwrap_or_else(|| "file".to_string()),
+            None => "file".to_string(),
+        };
+        Ok::<_, rquickjs::Error>(ref_id)
+    })?;
+    launcher.set("cache_icon", cache_icon_fn)?;
+
+    // 注入全局 console 与 launcher.log
+    let console = Object::new(ctx.clone())?;
+    let log_obj = Object::new(ctx.clone())?;
+
+    let log_info = Function::new(ctx.clone(), |msg: String| {
+        tracing::info!("{}", format_plugin_msg(&msg));
+        Ok::<_, rquickjs::Error>(())
+    })?;
+    let log_warn = Function::new(ctx.clone(), |msg: String| {
+        tracing::warn!("{}", format_plugin_msg(&msg));
+        Ok::<_, rquickjs::Error>(())
+    })?;
+    let log_error = Function::new(ctx.clone(), |msg: String| {
+        tracing::error!("{}", format_plugin_msg(&msg));
+        Ok::<_, rquickjs::Error>(())
+    })?;
+    let log_debug = Function::new(ctx.clone(), |msg: String| {
+        tracing::debug!("{}", format_plugin_msg(&msg));
+        Ok::<_, rquickjs::Error>(())
+    })?;
+
+    console.set("log", log_info.clone())?;
+    console.set("info", log_info.clone())?;
+    console.set("warn", log_warn.clone())?;
+    console.set("error", log_error.clone())?;
+    console.set("debug", log_debug.clone())?;
+
+    log_obj.set("info", log_info)?;
+    log_obj.set("warn", log_warn)?;
+    log_obj.set("error", log_error)?;
+    log_obj.set("debug", log_debug)?;
+
+    launcher.set("log", log_obj)?;
+    ctx.globals().set("launcher", launcher.clone())?;
+    ctx.globals().set("console", console)?;
+
+    Ok(launcher)
 }
 
 impl PluginManager {
@@ -102,13 +217,14 @@ impl PluginManager {
             .map(|p| p.name.clone())
             .unwrap_or_else(|| plugin_id.to_string())
     }
+
     /// 扫描并初始化所有在配置文件中启用的插件（默认无宿主窗口绑定）
     pub fn init(configs: &HashMap<String, PluginConfig>) -> Self {
         let config_path = crate::config::ConfigManager::detect_config_path();
         Self::init_with_host(configs, 0, Some(config_path))
     }
 
-    /// 扫描并初始化插件，并绑定 Win32 UI 线程宿主 HWND 与配置文件绝对路径
+    /// 扫描并初始化插件，每个插件拥有独立隔离的 QuickJS Context
     pub fn init_with_host(
         configs: &HashMap<String, PluginConfig>,
         hwnd: isize,
@@ -116,89 +232,6 @@ impl PluginManager {
     ) -> Self {
         let config_path = config_path_opt.unwrap_or_else(crate::config::ConfigManager::detect_config_path);
         let rt = Runtime::new().expect("初始化 QuickJS Runtime 失败");
-        let ctx = Context::full(&rt).expect("初始化 QuickJS Context 失败");
-
-        // 注入全局基础能力对象 (launcher 与 console)
-        ctx.with(|ctx| {
-            let launcher = Object::new(ctx.clone()).unwrap();
-            let shell = Object::new(ctx.clone()).unwrap();
-            let clipboard = Object::new(ctx.clone()).unwrap();
-
-            // launcher.shell.open(path)
-            let open_fn = Function::new(ctx.clone(), |path: String| {
-                open_system_path(&path);
-                Ok::<_, rquickjs::Error>(())
-            })
-            .unwrap();
-            shell.set("open", open_fn).unwrap();
-
-            // 注册命令行与外部进程能力 (launcher.shell.exec / spawn 与 launcher.process，支持 sudo 提权与 batch_exec)
-            let _ = host_process::register_process(&ctx, &launcher, &shell, hwnd);
-            launcher.set("shell", shell).unwrap();
-
-            // 注册原生文件系统操作能力 (launcher.fs)
-            let _ = host_fs::register_fs(&ctx, &launcher);
-
-            // 注册原生 HTTP 网络请求能力 (launcher.http 与 fetch)
-            let _ = host_http::register_http(&ctx, &launcher);
-
-            // 注册环境变量操作能力 (launcher.env)
-            let _ = host_env::register_env(&ctx, &launcher);
-
-            // 注册应用生命周期与配置管理能力 (launcher.app)
-            let _ = host_app::register_app(&ctx, &launcher, hwnd, config_path);
-
-            // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
-            let copy_fn = Function::new(ctx.clone(), |text: String| {
-                set_clipboard_text(&text);
-                Ok::<_, rquickjs::Error>(())
-            })
-            .unwrap();
-            clipboard.set("write_text", copy_fn.clone()).unwrap();
-            clipboard.set("write", copy_fn).unwrap();
-            launcher.set("clipboard", clipboard).unwrap();
-
-            // 注入全局 console 与 launcher.log
-            let console = Object::new(ctx.clone()).unwrap();
-            let log_obj = Object::new(ctx.clone()).unwrap();
-
-            let log_info = Function::new(ctx.clone(), |msg: String| {
-                tracing::info!("{}", format_plugin_msg(&msg));
-                Ok::<_, rquickjs::Error>(())
-            })
-            .unwrap();
-            let log_warn = Function::new(ctx.clone(), |msg: String| {
-                tracing::warn!("{}", format_plugin_msg(&msg));
-                Ok::<_, rquickjs::Error>(())
-            })
-            .unwrap();
-            let log_error = Function::new(ctx.clone(), |msg: String| {
-                tracing::error!("{}", format_plugin_msg(&msg));
-                Ok::<_, rquickjs::Error>(())
-            })
-            .unwrap();
-            let log_debug = Function::new(ctx.clone(), |msg: String| {
-                tracing::debug!("{}", format_plugin_msg(&msg));
-                Ok::<_, rquickjs::Error>(())
-            })
-            .unwrap();
-
-            console.set("log", log_info.clone()).unwrap();
-            console.set("info", log_info.clone()).unwrap();
-            console.set("warn", log_warn.clone()).unwrap();
-            console.set("error", log_error.clone()).unwrap();
-            console.set("debug", log_debug.clone()).unwrap();
-
-            log_obj.set("info", log_info).unwrap();
-            log_obj.set("warn", log_warn).unwrap();
-            log_obj.set("error", log_error).unwrap();
-            log_obj.set("debug", log_debug).unwrap();
-
-            launcher.set("log", log_obj).unwrap();
-            ctx.globals().set("launcher", launcher).unwrap();
-            ctx.globals().set("console", console).unwrap();
-        });
-
         let mut loaded = Vec::new();
 
         for (id, cfg) in configs {
@@ -226,12 +259,26 @@ impl PluginManager {
                 }
             };
 
+            // 为每个插件初始化独立隔离的 QuickJS Context
+            let plugin_ctx = match Context::full(&rt) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("创建插件 [{}] 的独立 Context 失败: {}", id, e);
+                    continue;
+                }
+            };
+
             let plugin_id = id.clone();
             let cfg_prefix = cfg.prefix.clone();
             let cfg_name = cfg.name.clone();
+            let config_path_clone = config_path.clone();
 
-            let load_res: Result<LoadedPlugin, String> = ctx.with(|ctx| {
-                // 1. 声明并评估 ES 模块
+            let load_res: Result<LoadedPlugin, String> = plugin_ctx.with(|ctx| {
+                // 1. 注入全局共享的 Rust Core API (launcher)
+                let launcher = setup_shared_launcher_apis(&ctx, hwnd, config_path_clone, &plugin_dir)
+                    .map_err(|e| format!("初始化 launcher API 失败: {}", e))?;
+
+                // 2. 声明并评估 ES 模块
                 let module = match Module::declare(ctx.clone(), plugin_id.clone(), code) {
                     Ok(m) => match m.eval() {
                         Ok((mod_eval, _)) => mod_eval,
@@ -240,19 +287,20 @@ impl PluginManager {
                     Err(e) => return Err(format!("插件模块 declare 失败: {}", e)),
                 };
 
-                // 2. 读取 metadata 对象并解析绑定原生动态库
-                let (dyn_libs, default_cfg_opt, meta_name_opt, meta_prefix_opt) = match module.get::<_, Object>("metadata") {
-                    Ok(meta) => {
-                        let libs = bind_dynamic_libraries(&ctx, &meta, &plugin_dir)?;
-                        let def_cfg = meta.get::<_, Object>("default_config").ok();
-                        let m_name = meta.get::<_, String>("name").ok();
-                        let m_prefix = meta.get::<_, String>("prefix").ok();
-                        (libs, def_cfg, m_name, m_prefix)
-                    }
-                    Err(_) => {
-                        return Err(format!("插件 [{}] 必须导出 metadata 元信息对象", id));
-                    }
-                };
+                // 3. 读取 metadata 对象并解析绑定原生动态库
+                let (dyn_libs, default_cfg_opt, meta_name_opt, meta_prefix_opt) =
+                    match module.get::<_, Object>("metadata") {
+                        Ok(meta) => {
+                            let libs = bind_dynamic_libraries(&ctx, &meta, &plugin_dir)?;
+                            let def_cfg = meta.get::<_, Object>("default_config").ok();
+                            let m_name = meta.get::<_, String>("name").ok();
+                            let m_prefix = meta.get::<_, String>("prefix").ok();
+                            (libs, def_cfg, m_name, m_prefix)
+                        }
+                        Err(_) => {
+                            return Err(format!("插件 [{}] 必须导出 metadata 元信息对象", id));
+                        }
+                    };
 
                 let final_name = if !cfg_name.is_empty() {
                     cfg_name
@@ -272,7 +320,7 @@ impl PluginManager {
 
                 let _guard = enter_plugin_context(&final_name);
 
-                // 3. 构建该插件的合并配置并初始化 JS Object
+                // 4. 构建合并配置
                 let config_obj = Object::new(ctx.clone()).unwrap();
                 let mut merged_config = HashMap::new();
                 if let Some(def_cfg) = default_cfg_opt {
@@ -308,45 +356,60 @@ impl PluginManager {
                         _ => {}
                     }
                 }
-                let _ = ctx.globals().set(format!("__plugin_{}_config", plugin_id), config_obj.clone());
-                if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
-                    let _ = launcher.set("config", config_obj.clone());
-                }
-                let _ = ctx.globals().set("config", config_obj.clone());
 
-                // 4. 执行插件 on_setup(context) 初始化生命周期
-                if let Ok(setup_fn) = module.get::<_, Function>("on_setup") {
-                    let setup_ctx = Object::new(ctx.clone()).unwrap();
-
-                    let p_dir = plugin_dir.clone();
-                    let cache_icon_fn = Function::new(ctx.clone(), move |val: rquickjs::Value| {
-                        let ref_id = match extract_icon_bytes(&val, &p_dir) {
-                            Some(bytes) => crate::ui::icon_extractor::cache_icon_from_bytes(&bytes)
-                                .unwrap_or_else(|| "file".to_string()),
-                            None => "file".to_string(),
-                        };
-                        Ok::<_, rquickjs::Error>(ref_id)
-                    })
+                // 5. 构建插件专属上下文对象 (self / context / plugin)，完全隔离于该插件 Context
+                let self_obj: Object = ctx
+                    .eval(
+                        r#"({
+                            get_config() { return this.config; },
+                            get_id() { return this.id; },
+                            get_name() { return this.name; },
+                            get_prefix() { return this.prefix; },
+                            get_dir() { return this.dir; }
+                        })"#,
+                    )
                     .unwrap();
-                    setup_ctx.set("cache_icon", cache_icon_fn).unwrap();
 
-                    if let Err(e) = setup_fn.call::<_, ()>((setup_ctx,)) {
+                let pdir_str = plugin_dir.to_string_lossy().to_string();
+                self_obj.set("config", config_obj).unwrap();
+                self_obj.set("id", plugin_id.clone()).unwrap();
+                self_obj.set("name", final_name.clone()).unwrap();
+                self_obj.set("prefix", final_prefix.clone()).unwrap();
+                self_obj.set("dir", pdir_str.clone()).unwrap();
+                self_obj.set("path", pdir_str).unwrap();
+
+                if let Ok(cache_fn) = launcher.get::<_, Function>("cache_icon") {
+                    self_obj.set("cache_icon", cache_fn).unwrap();
+                }
+
+                // launcher 保持为纯净的共享 API 网关，不携带插件私有 config
+                let _ = ctx.globals().set("launcher", launcher);
+                let _ = ctx.globals().set("self", self_obj.clone());
+                let _ = ctx.globals().set("context", self_obj.clone());
+                let _ = ctx.globals().set("plugin", self_obj.clone());
+                let _ = ctx.globals().set("context", self_obj.clone());
+                let _ = ctx.globals().set("plugin", self_obj.clone());
+
+                // 6. 执行插件 on_setup() 初始化生命周期
+                if let Ok(setup_fn) = module.get::<_, Function>("on_setup") {
+                    // 支持无参调用，或将 self_obj 作为首参传入
+                    if let Err(e) = setup_fn.call::<_, ()>((self_obj,)) {
                         warn!("插件 [{}] 执行 on_setup 失败: {}", plugin_id, e);
                     } else {
                         info!("插件 [{}] 初始化就绪", plugin_id);
                     }
                 }
 
-                // 5. 校验并注册 on_query 与 on_select 函数
+                // 7. 校验并注册 on_query 与 on_select 函数
                 let query_fn: Function = module
                     .get("on_query")
                     .map_err(|_| format!("插件 [{}] 缺少必需导出的 on_query(input) 函数", id))?;
-                let _ = ctx.globals().set(format!("__plugin_{}_query", plugin_id), query_fn);
+                let _ = ctx.globals().set("__on_query", query_fn);
 
                 let select_fn: Function = module
                     .get("on_select")
                     .map_err(|_| format!("插件 [{}] 缺少必需导出的 on_select(item) 函数", id))?;
-                let _ = ctx.globals().set(format!("__plugin_{}_select", plugin_id), select_fn);
+                let _ = ctx.globals().set("__on_select", select_fn);
 
                 info!("插件 [{}] 加载就绪，前缀 '{}'", id, final_prefix);
 
@@ -355,6 +418,7 @@ impl PluginManager {
                     name: final_name,
                     prefix: final_prefix,
                     dir: plugin_dir.clone(),
+                    ctx: plugin_ctx.clone(),
                     merged_config,
                     _dyn_libs: dyn_libs,
                 })
@@ -370,7 +434,6 @@ impl PluginManager {
 
         Self {
             _rt: rt,
-            ctx,
             plugins: loaded,
         }
     }
@@ -398,21 +461,16 @@ impl PluginManager {
 
     /// 向指定插件发起用户输入查询 (on_query)
     pub fn query(&self, plugin_id: &str, input: &str) -> Vec<PluginResultItem> {
-        let plugin_name = self.get_plugin_name(plugin_id);
-        let _guard = enter_plugin_context(&plugin_name);
-        self.ctx.with(|ctx| {
-            tracing::debug!("向插件 [{}] 派发查询参数: '{}'", plugin_id, input);
-            // 同步当前插件对应的配置对象
-            let cfg_key = format!("__plugin_{}_config", plugin_id);
-            if let Ok(cfg_obj) = ctx.globals().get::<_, Object>(&cfg_key) {
-                if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
-                    let _ = launcher.set("config", cfg_obj.clone());
-                }
-                let _ = ctx.globals().set("config", cfg_obj);
-            }
+        let plugin = match self.plugins.iter().find(|p| p.id == plugin_id) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
 
-            let fn_name = format!("__plugin_{}_query", plugin_id);
-            let query_fn: Function = match ctx.globals().get(&fn_name) {
+        let _guard = enter_plugin_context(&plugin.name);
+        plugin.ctx.with(|ctx| {
+            tracing::debug!("向插件 [{}] 派发查询参数: '{}'", plugin_id, input);
+
+            let query_fn: Function = match ctx.globals().get("__on_query") {
                 Ok(f) => f,
                 Err(e) => {
                     warn!("插件 [{}] 未找到 on_query 函数: {}", plugin_id, e);
@@ -475,20 +533,17 @@ impl PluginManager {
 
     /// 用户在列表中选中并确认某项条目时触发选择动作 (on_select)
     pub fn select(&self, plugin_id: &str, item_id: &str, payload: &str) {
-        let plugin_name = self.get_plugin_name(plugin_id);
-        let _guard = enter_plugin_context(&plugin_name);
-        self.ctx.with(|ctx| {
-            // 复用预置配置引用
-            let cfg_key = format!("__plugin_{}_config", plugin_id);
-            if let Ok(cfg_obj) = ctx.globals().get::<_, Object>(&cfg_key) {
-                if let Ok(launcher) = ctx.globals().get::<_, Object>("launcher") {
-                    let _ = launcher.set("config", cfg_obj.clone());
-                }
-                let _ = ctx.globals().set("config", cfg_obj);
+        let plugin = match self.plugins.iter().find(|p| p.id == plugin_id) {
+            Some(p) => p,
+            None => {
+                open_system_path(payload);
+                return;
             }
+        };
 
-            let fn_name = format!("__plugin_{}_select", plugin_id);
-            if let Ok(select_fn) = ctx.globals().get::<_, Function>(&fn_name) {
+        let _guard = enter_plugin_context(&plugin.name);
+        plugin.ctx.with(|ctx| {
+            if let Ok(select_fn) = ctx.globals().get::<_, Function>("__on_select") {
                 let item_obj = Object::new(ctx.clone()).unwrap();
                 let _ = item_obj.set("id", item_id);
                 let payload_val = if let Ok(parsed) = ctx.json_parse(payload) {
@@ -518,7 +573,7 @@ pub fn open_system_path(path: &str) {
     unsafe {
         let op = HSTRING::from("open");
         let target = HSTRING::from(path);
-        let _ = ShellExecuteW(
+        ShellExecuteW(
             None,
             PCWSTR(op.as_ptr()),
             PCWSTR(target.as_ptr()),
@@ -597,7 +652,7 @@ pub fn extract_icon_bytes<'js>(
                     return Some(file_bytes);
                 }
             }
-            return Some(st.into_bytes());
+            return None;
         }
     }
     None
