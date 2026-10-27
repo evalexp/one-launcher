@@ -62,11 +62,14 @@ pub enum PluginWorkerTask {
     },
 }
 
-pub struct PluginWorkerResponse {
-    pub request_id: u64,
-    pub plugin_id: String,
-    pub plugin_name: String,
-    pub items: Vec<crate::plugin::model::PluginResultItem>,
+pub enum PluginWorkerResponse {
+    Prefixes(Vec<(String, String, String)>),
+    Results {
+        request_id: u64,
+        plugin_id: String,
+        plugin_name: String,
+        items: Vec<crate::plugin::model::PluginResultItem>,
+    },
 }
 
 pub struct LauncherWindowState {
@@ -93,8 +96,52 @@ fn extract_plugin_prefixes(
 ) -> Vec<(String, String, String)> {
     let mut list = Vec::new();
     for (id, cfg) in configs {
-        if cfg.enabled && !cfg.prefix.is_empty() {
-            list.push((id.clone(), cfg.name.clone(), cfg.prefix.clone()));
+        if !cfg.enabled {
+            continue;
+        }
+
+        let mut prefix = cfg.prefix.clone();
+        let mut name = cfg.name.clone();
+
+        // 若配置文件未显式指定 prefix 或 name，从插件 index.js 的 metadata 声明中解析
+        if prefix.is_empty() || name.is_empty() {
+            let dir = crate::plugin::resolve_plugin_dir(&cfg.get_path(id));
+            let entry = dir.join(&cfg.entry);
+            if let Ok(content) = std::fs::read_to_string(&entry) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if prefix.is_empty() {
+                        if let Some(idx) = trimmed.find("prefix") {
+                            let after = trimmed[idx + "prefix".len()..].trim_start();
+                            if after.starts_with(':') {
+                                let val = after[1..].trim().trim_matches(|c| c == '"' || c == '\'' || c == ',' || c == ' ');
+                                if !val.is_empty() {
+                                    prefix = val.to_string();
+                                }
+                            }
+                        }
+                    }
+                    if name.is_empty() {
+                        if let Some(idx) = trimmed.find("name") {
+                            let after = trimmed[idx + "name".len()..].trim_start();
+                            if after.starts_with(':') {
+                                let val = after[1..].trim().trim_matches(|c| c == '"' || c == '\'' || c == ',' || c == ' ');
+                                if !val.is_empty() {
+                                    name = val.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if name.is_empty() {
+            name = id.clone();
+        }
+
+        if !prefix.is_empty() {
+            list.push((id.clone(), name, prefix));
         }
     }
     list.sort_by(|a, b| b.2.len().cmp(&a.2.len()));
@@ -131,12 +178,30 @@ impl LauncherWindowState {
             .name("OneLauncher-PluginWorker".to_string())
             .spawn(move || {
                 let mut p_mgr = PluginManager::init_with_host(&initial_configs, worker_hwnd_val, Some(config_path.clone()));
+
+                // 将 Worker 实际加载解析后的精准 (id, name, prefix) 派发给 UI 线程
+                let prefixes: Vec<(String, String, String)> = p_mgr
+                    .plugins
+                    .iter()
+                    .map(|p| (p.id.clone(), p.name.clone(), p.prefix.clone()))
+                    .collect();
+                let _ = tx_res.send(PluginWorkerResponse::Prefixes(prefixes));
+                unsafe {
+                    let target_hwnd = HWND(worker_hwnd_val as *mut _);
+                    let _ = PostMessageW(
+                        target_hwnd,
+                        WM_APP_PLUGIN_RESULTS,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(0),
+                    );
+                }
+
                 while let Ok(task) = rx_task.recv() {
                     match task {
                         PluginWorkerTask::Query { request_id, plugin_id, input } => {
                             let plugin_name = p_mgr.get_plugin_name(&plugin_id);
                             let items = p_mgr.query(&plugin_id, &input);
-                            let _ = tx_res.send(PluginWorkerResponse {
+                            let _ = tx_res.send(PluginWorkerResponse::Results {
                                 request_id,
                                 plugin_id,
                                 plugin_name,
@@ -157,6 +222,21 @@ impl LauncherWindowState {
                         }
                         PluginWorkerTask::Reload { configs } => {
                             p_mgr = PluginManager::init_with_host(&configs, worker_hwnd_val, Some(config_path.clone()));
+                            let prefixes: Vec<(String, String, String)> = p_mgr
+                                .plugins
+                                .iter()
+                                .map(|p| (p.id.clone(), p.name.clone(), p.prefix.clone()))
+                                .collect();
+                            let _ = tx_res.send(PluginWorkerResponse::Prefixes(prefixes));
+                            unsafe {
+                                let target_hwnd = HWND(worker_hwnd_val as *mut _);
+                                let _ = PostMessageW(
+                                    target_hwnd,
+                                    WM_APP_PLUGIN_RESULTS,
+                                    windows::Win32::Foundation::WPARAM(0),
+                                    windows::Win32::Foundation::LPARAM(0),
+                                );
+                            }
                         }
                     }
                 }
@@ -601,18 +681,35 @@ unsafe extern "system" fn launcher_wndproc(
             }
             WM_APP_PLUGIN_RESULTS => {
                 let mut updated = false;
-                while let Ok(res) = state.rx_worker.try_recv() {
-                    if res.request_id == state.request_id {
-                        let mut items = Vec::new();
-                        for p_item in res.items {
-                            items.push(SearchResultItem::from_plugin(&res.plugin_name, &res.plugin_id, p_item));
+                while let Ok(msg) = state.rx_worker.try_recv() {
+                    match msg {
+                        PluginWorkerResponse::Prefixes(mut prefixes) => {
+                            prefixes.sort_by(|a, b| b.2.len().cmp(&a.2.len()));
+                            state.plugin_prefixes = prefixes;
+                            if !state.query.trim_start().is_empty() {
+                                state.update_search();
+                                updated = true;
+                            }
                         }
-                        state.results = items;
-                        if state.selected_index >= state.results.len() {
-                            state.selected_index = 0;
+                        PluginWorkerResponse::Results {
+                            request_id,
+                            plugin_id,
+                            plugin_name,
+                            items,
+                        } => {
+                            if request_id == state.request_id {
+                                let mut res_items = Vec::new();
+                                for p_item in items {
+                                    res_items.push(SearchResultItem::from_plugin(&plugin_name, &plugin_id, p_item));
+                                }
+                                state.results = res_items;
+                                if state.selected_index >= state.results.len() {
+                                    state.selected_index = 0;
+                                }
+                                state.update_window_size();
+                                updated = true;
+                            }
                         }
-                        state.update_window_size();
-                        updated = true;
                     }
                 }
                 if updated {
