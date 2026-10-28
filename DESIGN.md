@@ -49,7 +49,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 │   ├─ launcher.app: quit, reload, edit_config, message_box 原生弹窗     │
 │   ├─ launcher.clipboard: 系统剪贴板读写                                │
 │   └─ launcher.cache_icon: 图标提取与注册入池                           │
-│ - 插件私有上下文 (self / context):                                     │
+│ - 插件私有上下文 (self):                                               │
 │   ├─ self.get_config() / self.config: 插件私有合并配置                 │
 │   ├─ self.id, self.name, self.prefix, self.dir                         │
 │   └─ self.cache_icon: 相对路径自动解析                                 │
@@ -72,7 +72,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 ### 3.1 插件系统与上下文隔离架构 (`src/plugin/`)
 1. **多 Context 完全隔离与共享 API 分离**：
    - **共享 API 网关 (`launcher`)**：`launcher` 作为纯净的程序能力接口接入点（API Gateway），绑定至共享 Rust 核心，提供文件操作、网络请求、进程与提权命令、剪贴板、系统管理及图标缓存能力。`launcher` 不包含任何插件私有状态或私有 `config`。
-   - **插件私有上下文 (`self` / `context`)**：每个插件在初始化阶段都会在 QuickJS Runtime 内获得专属独立的 `Context`。在此 Context 中注入专属于该插件的 `self` 对象（别名 `context`），提供 `self.get_config()`、`self.config`、`self.id`、`self.name`、`self.prefix`、`self.dir`。各插件的全局变量与模块状态 100% 物理隔离，杜绝全局作用域污染。
+   - **插件私有上下文 (`self`)**：每个插件在初始化阶段都会在 QuickJS Runtime 内获得专属独立的 `Context`。在此 Context 中注入专属于该插件的 `self` 对象，提供 `self.get_config()`、`self.config`、`self.id`、`self.name`、`self.prefix`、`self.dir`。全局变量严格限定为 `launcher` 与 `self`（以及宿主 `console`），各插件的全局变量与模块状态 100% 物理隔离，杜绝全局作用域污染。
 2. **生命周期规范**：
    - `metadata`: 声明插件名、前缀（`prefix`）、默认配置（`default_config`）与 FFI 声明。
    - `on_setup()`: **无参设计**，插件首次加载时执行一次。图标直接通过 `launcher.cache_icon(...)` 或 `self.cache_icon(...)` 注册。
@@ -114,7 +114,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 | **极速计算器** | `plugins/calculator/` | `=` | 高精度数学表达式快速解析与计算结果一键复制 |
 | **Everything 全盘搜索** | `plugins/everything/` | `fs:` | 联动 Everything SDK / 原生接口快速检索系统文件与路径定位 |
 | **TOTP 动态令牌** | `plugins/totp/` | `otp:` | 基于标准 HMAC-SHA1 的 2FA 验证码离线实时计算与剪贴板复制 |
-| **插件管理器** | `plugins/plugin-manager/` | `pm:` | 插件在线安装、依赖自动检测、本地插件卸载与注册表项维护 |
+| **插件管理器** | `plugins/plugin-manager/` | `pm:` | 插件在线安装、依赖自动检测、插件热启用/禁用、本地插件卸载与配置维护 |
 
 ---
 
@@ -128,15 +128,18 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 - [x] **插件上下文隔离与 Rust Core API 共享重构**：
   - `launcher` 保持为纯净的全局共享 API 接入点，完全剥离私有 `config`。
   - 插件分配独立隔离的 QuickJS Context，互相之间全局变量与状态彻底隔离。
-  - 引入 `self` / `context` 插件私有上下文对象，通过 `self.get_config()` 获取自有配置。
-  - `on_setup` 改为无参设计，`cache_icon` 整合至 `launcher` 与 `self`。
+  - 引入 `self` 插件私有上下文对象，通过 `self.get_config()` 获取自有配置。全局变量严格限定为 `launcher`、`self` 与 `console`。
+  - `on_setup` 改为严格无参设计，仅 `on_query(input)` 与 `on_select(item)` 接收参数，`cache_icon` 整合至 `launcher` 与 `self`。
 - [x] **完全隔离虚拟机与 ES 模块安全评估能力**：
   - 宿主提供 `launcher.create_context()`，按需生成独立 QuickJS 运行时与沙盒上下文。
   - 宿主提供 `launcher.eval_module()`，支持以原生 ES Module 规范直接评估第三方脚本，安全提取 `metadata` 与导出列表，无需脆弱的字符串正则转换。
 - [x] **插件管理器全功能重写与多源 URL Resolver**：
   - 支持多源代码托管平台直链解析（GitHub 自动映射至 raw.githubusercontent.com、Gitee、GitLab 以及任意通用 HTTP/HTTPS 链接）。
   - 自动化依赖收集：自动扫描 `metadata.dynamic_library`、`metadata.native` 原生动态链接库、`metadata.icon` / `metadata.assets` 静态资源，并在沙盒环境中预执行 `on_setup` 拦截动态注册图标。
-  - 全流程自动化：资源全量离线下载 -> 目录创建 -> 配置热注册 -> 宿主实时重载。
+  - 插件生命周期管理闭环：
+    - 在线安装 (`install`)：资源全量离线下载 -> 目录创建 -> 配置热注册 -> 宿主实时重载。
+    - 热启用 (`enable`) / 热禁用 (`disable`)：全盘扫描磁盘插件与配置段（精准跳过注释），动态切换状态并热重载。
+    - 完整卸载 (`uninstall`)：列出所有已安装与声明插件，同步抹除配置文件与本地磁盘目录。
 - [x] **配置清理与简化**：
   - 移除无用外观配置，精简 `AppearanceConfig`。
   - 插件 `PluginConfig.path` 设为可选，默认解析回退到 `plugins/<plugin-id>`。

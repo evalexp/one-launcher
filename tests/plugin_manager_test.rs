@@ -93,12 +93,37 @@ path = "plugins/demo_plugin"
     assert!(!updated_toml.contains("[plugins.calc_mock]"), "卸载后配置文件中不应再包含该插件段");
     assert!(updated_toml.contains("[plugins.demo_plugin]"), "未卸载的插件仍应保留");
 
-    // 7. 测试 disable 与 enable
+    // 7. 测试 disable 与 enable 过滤规则
+    // demo_plugin 处于启用状态：应出现在 disable 列表中，不得出现在 enable 列表中
+    let dis_list = pm.query("pm", "disable");
+    let dis_ids: Vec<String> = dis_list.iter().map(|i| i.id.clone()).collect();
+    assert!(dis_ids.contains(&"disable-demo_plugin".to_string()), "已启用的插件必须出现在 disable 列表中");
+
+    let en_list = pm.query("pm", "enable");
+    let en_ids: Vec<String> = en_list.iter().map(|i| i.id.clone()).collect();
+    assert!(!en_ids.contains(&"enable-demo_plugin".to_string()), "已启用的插件不得出现在 enable 列表中");
+
+    // 禁用 demo_plugin
     let dis_payload = r#"{"action":"disable","pluginId":"demo_plugin","pluginName":"演示插件"}"#;
     pm.select("pm", "disable-demo_plugin", dis_payload);
     let disabled_toml = fs::read_to_string(&mock_config).unwrap();
     assert!(disabled_toml.contains("enabled = false"));
 
+    // 禁用后查询：enable 列表中应出现 demo_plugin，disable 列表中不再出现
+    let en_list_after = pm.query("pm", "enable");
+    let en_ids_after: Vec<String> = en_list_after.iter().map(|i| i.id.clone()).collect();
+    assert!(en_ids_after.contains(&"enable-demo_plugin".to_string()), "被禁用的插件必须出现在 enable 列表中");
+
+    let dis_list_after = pm.query("pm", "disable");
+    let dis_ids_after: Vec<String> = dis_list_after.iter().map(|i| i.id.clone()).collect();
+    assert!(!dis_ids_after.contains(&"disable-demo_plugin".to_string()), "已被禁用的插件不得出现在 disable 列表中");
+
+    // uninstall 列表中全部插件都要有 (无论是启用还是禁用)
+    let un_all_after = pm.query("pm", "uninstall");
+    let un_ids_after: Vec<String> = un_all_after.iter().map(|i| i.id.clone()).collect();
+    assert!(un_ids_after.contains(&"uninstall-demo_plugin".to_string()), "uninstall 必须包含所有插件");
+
+    // 重新启用 demo_plugin
     let en_payload = r#"{"action":"enable","pluginId":"demo_plugin","pluginName":"演示插件"}"#;
     pm.select("pm", "enable-demo_plugin", en_payload);
     let enabled_toml = fs::read_to_string(&mock_config).unwrap();

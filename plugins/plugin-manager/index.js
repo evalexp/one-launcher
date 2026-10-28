@@ -29,6 +29,16 @@ function resolveUrl(baseUrl, relPath) {
  * 获取插件存放的基础目录
  */
 function getPluginsBaseDir() {
+  if (typeof launcher !== "undefined" && launcher.app && launcher.app.config_path) {
+    const p = launcher.app.config_path.replace(/\\/g, "/");
+    const idx = p.lastIndexOf("/");
+    if (idx !== -1) {
+      const candidate = p.substring(0, idx) + "/plugins";
+      if (launcher.fs.exists(candidate)) {
+        return candidate;
+      }
+    }
+  }
   if (typeof launcher !== "undefined" && launcher.fs && launcher.fs.exists("plugins")) {
     return "plugins";
   }
@@ -36,22 +46,52 @@ function getPluginsBaseDir() {
     const p = launcher.app.config_path.replace(/\\/g, "/");
     const idx = p.lastIndexOf("/");
     if (idx !== -1) {
-      const dir = p.substring(0, idx) + "/plugins";
-      return dir;
+      return p.substring(0, idx) + "/plugins";
     }
   }
   return "plugins";
 }
 
 /**
- * 获取所有已安装/已声明的插件列表
+ * 获取全部插件列表（合并本地 plugins/<id>/index.js 目录与 config.toml 中的 [plugins.<id>] 配置）
  */
-function getInstalledPlugins() {
-  const list = [];
-  const seenIds = new Set();
+function getAllPlugins() {
+  const map = new Map();
+  const baseDir = getPluginsBaseDir();
   const configPath = typeof launcher !== "undefined" && launcher.app && launcher.app.config_path;
 
-  // 1. 从 config.toml 中解析声明的插件配置段（跳过注释行）
+  // 1. 扫描本地 plugins 目录下的所有文件夹 plugins/<id>/index.js
+  if (typeof launcher !== "undefined" && launcher.fs && launcher.fs.exists(baseDir)) {
+    const dirEntries = launcher.fs.list(baseDir) || [];
+    for (const entry of dirEntries) {
+      if (entry.is_dir && !entry.name.startsWith(".")) {
+        const id = entry.name;
+        const normEntryPath = entry.path.replace(/\\/g, "/");
+        const indexFile = normEntryPath + "/index.js";
+        if (launcher.fs.exists(indexFile)) {
+          let name = id;
+          let prefix = "";
+          const code = launcher.fs.read_text(indexFile) || "";
+          const nm = code.match(/name:\s*['"](.*?)['"]/);
+          const pr = code.match(/prefix:\s*['"](.*?)['"]/);
+          if (nm) name = nm[1];
+          if (pr) prefix = pr[1];
+
+          map.set(id, {
+            id,
+            name,
+            prefix,
+            path: normEntryPath,
+            enabled: false, // 仅在本地磁盘存在但未在配置中注册的插件，默认未启用
+            inConfig: false,
+            diskExists: true
+          });
+        }
+      }
+    }
+  }
+
+  // 2. 扫描 config.toml 中非注释的 [plugins.<id>] 配置段并完成合并
   if (configPath && launcher.fs && launcher.fs.exists(configPath)) {
     const tomlContent = launcher.fs.read_text(configPath) || "";
     const lines = tomlContent.split("\n");
@@ -59,37 +99,59 @@ function getInstalledPlugins() {
     let currentSectionLines = [];
 
     const processCurrentSection = () => {
-      if (!currentId || seenIds.has(currentId)) return;
-      seenIds.add(currentId);
+      if (!currentId) return;
       const text = currentSectionLines.join("\n");
       const nameM = text.match(/^\s*name\s*=\s*['"](.*?)['"]/m);
       const prefixM = text.match(/^\s*prefix\s*=\s*['"](.*?)['"]/m);
       const pathM = text.match(/^\s*path\s*=\s*['"](.*?)['"]/m);
       const enabledM = text.match(/^\s*enabled\s*=\s*(true|false)/m);
 
-      const relPath = pathM ? pathM[1] : ("plugins/" + currentId);
       const isEnabled = enabledM ? (enabledM[1] === "true") : true;
+      const relPath = pathM ? pathM[1] : ("plugins/" + currentId);
 
-      // 验证在磁盘上是否存在
-      const baseDir = getPluginsBaseDir();
-      const checkPath1 = relPath;
-      const checkPath2 = baseDir + "/" + currentId;
-      const diskExists = (launcher.fs.exists(checkPath1) || launcher.fs.exists(checkPath2) || launcher.fs.exists(checkPath1 + "/index.js") || launcher.fs.exists(checkPath2 + "/index.js"));
+      const candidateIndex1 = relPath.replace(/\\/g, "/") + "/index.js";
+      const candidateIndex2 = baseDir + "/" + currentId + "/index.js";
+      const diskExists = launcher.fs.exists(candidateIndex1) || launcher.fs.exists(candidateIndex2) || launcher.fs.exists(relPath);
 
-      list.push({
-        id: currentId,
-        name: nameM ? nameM[1] : currentId,
-        prefix: prefixM ? prefixM[1] : "",
-        path: relPath,
-        enabled: isEnabled,
-        diskExists
-      });
+      if (map.has(currentId)) {
+        // 插件已在磁盘扫描中发现，用配置文件中的精准启用状态与配置段属性进行覆盖合并
+        const existing = map.get(currentId);
+        existing.enabled = isEnabled;
+        existing.inConfig = true;
+        if (nameM) existing.name = nameM[1];
+        if (prefixM) existing.prefix = prefixM[1];
+        if (pathM) existing.path = relPath;
+      } else {
+        // 仅在配置中声明但本地标准目录未匹配到
+        let name = nameM ? nameM[1] : currentId;
+        let prefix = prefixM ? prefixM[1] : "";
+
+        if ((!nameM || !prefixM) && diskExists) {
+          const indexFile = launcher.fs.exists(candidateIndex1) ? candidateIndex1 : candidateIndex2;
+          if (launcher.fs.exists(indexFile)) {
+            const code = launcher.fs.read_text(indexFile) || "";
+            const nm = code.match(/name:\s*['"](.*?)['"]/);
+            const pr = code.match(/prefix:\s*['"](.*?)['"]/);
+            if (!nameM && nm) name = nm[1];
+            if (!prefixM && pr) prefix = pr[1];
+          }
+        }
+
+        map.set(currentId, {
+          id: currentId,
+          name,
+          prefix,
+          path: relPath,
+          enabled: isEnabled,
+          inConfig: true,
+          diskExists
+        });
+      }
     };
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const trimmed = line.trim();
-      // 严格跳过任何注释行，避免把注释模板当做实际声明
       if (trimmed.startsWith("#")) continue;
 
       const headerMatch = trimmed.match(/^\[plugins\.([a-zA-Z0-9_\-]+)\]$/);
@@ -108,43 +170,11 @@ function getInstalledPlugins() {
     processCurrentSection();
   }
 
-  // 2. 从本地 plugins 目录扫描已存在且包含 index.js 的文件夹
-  const pluginsDir = getPluginsBaseDir();
-  if (typeof launcher !== "undefined" && launcher.fs && launcher.fs.exists(pluginsDir)) {
-    const dirEntries = launcher.fs.list(pluginsDir) || [];
-    for (const entry of dirEntries) {
-      if (entry.is_dir && !entry.name.startsWith(".")) {
-        const id = entry.name;
-        if (!seenIds.has(id)) {
-          const indexFile = (entry.path.replace(/\\/g, "/") + "/index.js");
-          let name = id;
-          let prefix = "";
-          let hasIndex = false;
-          if (launcher.fs.exists(indexFile)) {
-            hasIndex = true;
-            const code = launcher.fs.read_text(indexFile) || "";
-            const nm = code.match(/name:\s*['"](.*?)['"]/);
-            const pr = code.match(/prefix:\s*['"](.*?)['"]/);
-            if (nm) name = nm[1];
-            if (pr) prefix = pr[1];
-          }
-          if (hasIndex) {
-            list.push({
-              id,
-              name,
-              prefix,
-              path: entry.path,
-              enabled: false,
-              diskExists: true
-            });
-            seenIds.add(id);
-          }
-        }
-      }
-    }
-  }
+  return Array.from(map.values());
+}
 
-  return list;
+function getInstalledPlugins() {
+  return getAllPlugins();
 }
 
 /**
@@ -776,8 +806,8 @@ export function on_query(input) {
       : raw.substring(2).trim();
 
     const plugins = getInstalledPlugins();
-    // 仅列出当前 enabled === false 的插件
-    const disabledPlugins = plugins.filter(p => !p.enabled);
+    // 仅列出当前 enabled === false 的插件（排除插件管理器自身）
+    const disabledPlugins = plugins.filter(p => !p.enabled && p.id !== "plugin-manager");
     const query = afterEnable.toLowerCase();
 
     const filtered = query
