@@ -211,3 +211,125 @@ export function on_select(item) {}
     let _ = fs::remove_dir_all(&dest_dir);
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_plugin_manager_url_resolver_and_native_metadata_download() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+
+            if req.contains("index.js") {
+                let code = r#"
+export const metadata = {
+  name: "测试原生插件",
+  prefix: "np:",
+  native: {
+    Core: { path: "./native_core.dll" }
+  }
+};
+
+export function on_setup() {
+  launcher.cache_icon("./logo.png");
+}
+
+export function on_query(input) { return []; }
+export function on_select(item) {}
+"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    code.len(),
+                    code
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            } else if req.contains("native_core.dll") {
+                let dll_data = b"MOCK_NATIVE_DLL_DATA";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    dll_data.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(dll_data);
+            } else if req.contains("logo.png") {
+                let logo_data = b"MOCK_LOGO_PNG_DATA";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    logo_data.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(logo_data);
+            }
+            let _ = stream.flush();
+        }
+    });
+
+    let temp_dir = std::env::temp_dir().join("one_launcher_pm_resolver_test");
+    let _ = fs::create_dir_all(&temp_dir);
+    let mock_config = temp_dir.join("config.toml");
+    fs::write(&mock_config, "[general]\nhotkey = \"Alt+Space\"\n").unwrap();
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "pm".to_string(),
+        PluginConfig {
+            enabled: true,
+            prefix: "pm:".to_string(),
+            name: "插件管理器".to_string(),
+            path: Some(PathBuf::from("plugins/plugin-manager")),
+            entry: "index.js".to_string(),
+            config: toml::Table::new(),
+        },
+    );
+
+    let pm = PluginManager::init_with_host(&configs, 0, Some(mock_config.clone()));
+
+    // 1. 测试 Gitee URL 解析查询
+    let gitee_items = pm.query("pm", "install gitee.com/evalexp/my-tool/raw/master/index.js");
+    assert_eq!(gitee_items.len(), 1);
+    assert_eq!(gitee_items[0].id, "install-my-tool");
+    assert!(gitee_items[0].subtitle.contains("gitee.com/evalexp/my-tool/raw/master/index.js"));
+
+    // 2. 测试 Direct HTTP URL 解析查询
+    let direct_url = format!("http://127.0.0.1:{}/native_plugin/index.js", port);
+    let direct_items = pm.query("pm", &format!("install {}", direct_url));
+    assert_eq!(direct_items.len(), 1);
+    assert_eq!(direct_items[0].id, "install-native_plugin");
+
+    // 3. 执行安装Direct HTTP URL插件（包含 metadata.native 与 parameterless launcher.cache_icon）
+    let raw_url = format!("http://127.0.0.1:{}/native_plugin/index.js", port);
+    let base_url = format!("http://127.0.0.1:{}/native_plugin/", port);
+    let payload = format!(
+        r#"{{
+        "action": "install",
+        "parsed": {{
+            "pluginId": "native_test",
+            "rawUrl": "{}",
+            "baseUrl": "{}"
+        }}
+    }}"#,
+        raw_url, base_url
+    );
+
+    pm.select("pm", "install-native_test", &payload);
+
+    // 4. 验证安装产物与配置
+    let updated_toml = fs::read_to_string(&mock_config).unwrap();
+    assert!(updated_toml.contains("[plugins.native_test]"));
+    assert!(updated_toml.contains(r#"prefix = "np:""#));
+    assert!(updated_toml.contains(r#"name = "测试原生插件""#));
+
+    let dest_dir = PathBuf::from("plugins/native_test");
+    assert!(dest_dir.join("index.js").exists(), "index.js 必须存在");
+    assert!(dest_dir.join("native_core.dll").exists(), "metadata.native 中的 dll 必须成功下载");
+    assert!(dest_dir.join("logo.png").exists(), "on_setup(launcher.cache_icon) 拦截的图标必须成功保存");
+
+    assert_eq!(fs::read(dest_dir.join("native_core.dll")).unwrap(), b"MOCK_NATIVE_DLL_DATA");
+    assert_eq!(fs::read(dest_dir.join("logo.png")).unwrap(), b"MOCK_LOGO_PNG_DATA");
+
+    let _ = fs::remove_dir_all(&dest_dir);
+    let _ = fs::remove_dir_all(&temp_dir);
+}

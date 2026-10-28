@@ -8,7 +8,7 @@ export const metadata = {
  * 提取文件名的 basename
  */
 function getBasename(pathStr) {
-  const norm = (pathStr || "").replace(/\\/g, "/");
+  const norm = (pathStr || "").replace(/\\/g, "/").replace(/[?#].*$/, "");
   const idx = norm.lastIndexOf("/");
   return idx !== -1 ? norm.substring(idx + 1) : norm;
 }
@@ -17,11 +17,12 @@ function getBasename(pathStr) {
  * 将相对路径解析为基于远程基准地址的完整 URL
  */
 function resolveUrl(baseUrl, relPath) {
-  const trimmed = (relPath || "").replace(/^\.?\//, "");
+  const trimmed = (relPath || "").trim().replace(/^\.?\//, "");
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
     return trimmed;
   }
-  return baseUrl + trimmed;
+  const base = (baseUrl || "").endsWith("/") ? baseUrl : baseUrl + "/";
+  return base + trimmed;
 }
 
 /**
@@ -51,7 +52,7 @@ function getInstalledPlugins() {
 
   // 1. 从 config.toml 中解析声明的插件
   const configPath = typeof launcher !== "undefined" && launcher.app && launcher.app.config_path;
-  if (configPath && launcher.fs.exists(configPath)) {
+  if (configPath && launcher.fs && launcher.fs.exists(configPath)) {
     const tomlContent = launcher.fs.read_text(configPath) || "";
     const pluginHeaderRegex = /\[plugins\.([a-zA-Z0-9_\-]+)\]/g;
     let match;
@@ -113,78 +114,178 @@ function getInstalledPlugins() {
 }
 
 /**
- * 解析 GitHub 链接，提取目标仓库、分支、路径及推导的插件 ID
+ * 通用插件 URL 解析器 (URL Resolver)
+ * 自动识别并映射主流代码托管源（GitHub, Gitee, GitLab）至 Raw 内容直链，
+ * 并支持任意通用的 HTTP/HTTPS 直链。
  */
-export function parseGithubUrl(raw) {
+export function resolvePluginUrl(raw) {
   let cleaned = (raw || "").trim();
-  cleaned = cleaned.replace(/^https?:\/\//i, "");
-  cleaned = cleaned.replace(/^\/+|\/+$/g, "");
+  if (!cleaned) return null;
 
   // 1. 直连 raw.githubusercontent.com
-  if (cleaned.toLowerCase().startsWith("raw.githubusercontent.com/")) {
-    const rest = cleaned.substring("raw.githubusercontent.com/".length);
-    const parts = rest.split("/").filter(Boolean);
-    if (parts.len < 3) return null;
+  const rawGhPrefix = /^https?:\/\/raw\.githubusercontent\.com\//i;
+  if (rawGhPrefix.test(cleaned) || cleaned.toLowerCase().startsWith("raw.githubusercontent.com/")) {
+    const withoutPrefix = cleaned.replace(/^https?:\/\//i, "").substring("raw.githubusercontent.com/".length);
+    const parts = withoutPrefix.split("/").filter(Boolean);
+    if (parts.length < 3) return null;
     const owner = parts[0];
     const repo = parts[1];
     const branch = parts[2];
     const pathParts = parts.slice(3);
+    if (pathParts.length === 0 || !pathParts[pathParts.length - 1].endsWith(".js")) {
+      pathParts.push("index.js");
+    }
     const fullPath = pathParts.join("/");
     const idx = fullPath.lastIndexOf("/");
     const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
     const pluginId = baseDir ? baseDir.split("/").pop() : repo;
 
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fullPath}`;
-    const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${baseDir ? baseDir + "/" : ""}`;
-
     return {
+      source: "github",
       owner,
       repo,
       branch,
+      fullPath,
       pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
-      rawUrl,
+      rawUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fullPath}`,
+      baseUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${baseDir ? baseDir + "/" : ""}`
+    };
+  }
+
+  // 2. 标准 github.com 格式 (例如 github.com/owner/repo/index.js 或 github.com/owner/repo/blob/main/calc/index.js)
+  const ghPrefix = /^https?:\/\/github\.com\//i;
+  if (ghPrefix.test(cleaned) || cleaned.toLowerCase().startsWith("github.com/")) {
+    const withoutPrefix = cleaned.replace(/^https?:\/\//i, "").substring("github.com/".length);
+    const parts = withoutPrefix.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, "");
+    let branch = "main";
+    let pathParts = parts.slice(2);
+
+    if (pathParts.length >= 2 && (pathParts[0] === "blob" || pathParts[0] === "raw")) {
+      branch = pathParts[1];
+      pathParts = pathParts.slice(2);
+    }
+
+    if (pathParts.length === 0 || !pathParts[pathParts.length - 1].endsWith(".js")) {
+      pathParts.push("index.js");
+    }
+
+    const fullPath = pathParts.join("/");
+    const idx = fullPath.lastIndexOf("/");
+    const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
+    const pluginId = baseDir ? baseDir.split("/").pop() : repo;
+
+    return {
+      source: "github",
+      owner,
+      repo,
+      branch,
+      fullPath,
+      pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+      rawUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fullPath}`,
+      baseUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${baseDir ? baseDir + "/" : ""}`
+    };
+  }
+
+  // 3. Gitee 格式 (gitee.com/owner/repo/raw/master/index.js 或 gitee.com/owner/repo/blob/master/index.js)
+  const giteePrefix = /^https?:\/\/gitee\.com\//i;
+  if (giteePrefix.test(cleaned) || cleaned.toLowerCase().startsWith("gitee.com/")) {
+    const withoutPrefix = cleaned.replace(/^https?:\/\//i, "").substring("gitee.com/".length);
+    const parts = withoutPrefix.split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      const owner = parts[0];
+      const repo = parts[1].replace(/\.git$/i, "");
+      let branch = "master";
+      let pathParts = parts.slice(2);
+      if (pathParts.length >= 2 && (pathParts[0] === "raw" || pathParts[0] === "blob")) {
+        branch = pathParts[1];
+        pathParts = pathParts.slice(2);
+      }
+      if (pathParts.length === 0 || !pathParts[pathParts.length - 1].endsWith(".js")) {
+        pathParts.push("index.js");
+      }
+      const fullPath = pathParts.join("/");
+      const idx = fullPath.lastIndexOf("/");
+      const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
+      const pluginId = baseDir ? baseDir.split("/").pop() : repo;
+
+      return {
+        source: "gitee",
+        owner,
+        repo,
+        branch,
+        fullPath,
+        pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+        rawUrl: `https://gitee.com/${owner}/${repo}/raw/${branch}/${fullPath}`,
+        baseUrl: `https://gitee.com/${owner}/${repo}/raw/${branch}/${baseDir ? baseDir + "/" : ""}`
+      };
+    }
+  }
+
+  // 4. GitLab 格式 (gitlab.com/owner/repo/-/raw/main/index.js)
+  const gitlabPrefix = /^https?:\/\/gitlab\.com\//i;
+  if (gitlabPrefix.test(cleaned) || cleaned.toLowerCase().startsWith("gitlab.com/")) {
+    const withoutPrefix = cleaned.replace(/^https?:\/\//i, "").substring("gitlab.com/".length);
+    const parts = withoutPrefix.split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      const owner = parts[0];
+      const repo = parts[1].replace(/\.git$/i, "");
+      let branch = "main";
+      let pathParts = parts.slice(2);
+      if (pathParts[0] === "-") pathParts.shift();
+      if (pathParts.length >= 2 && pathParts[0] === "raw") {
+        branch = pathParts[1];
+        pathParts = pathParts.slice(2);
+      }
+      if (pathParts.length === 0 || !pathParts[pathParts.length - 1].endsWith(".js")) {
+        pathParts.push("index.js");
+      }
+      const fullPath = pathParts.join("/");
+      const idx = fullPath.lastIndexOf("/");
+      const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
+      const pluginId = baseDir ? baseDir.split("/").pop() : repo;
+
+      return {
+        source: "gitlab",
+        owner,
+        repo,
+        branch,
+        fullPath,
+        pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+        rawUrl: `https://gitlab.com/${owner}/${repo}/-/raw/${branch}/${fullPath}`,
+        baseUrl: `https://gitlab.com/${owner}/${repo}/-/raw/${branch}/${baseDir ? baseDir + "/" : ""}`
+      };
+    }
+  }
+
+  // 5. 通用 HTTP / HTTPS 直接下载链接 (如局域网测试服务器、CDN 或私有部署端点)
+  if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
+    const lastSlash = cleaned.lastIndexOf("/");
+    const baseUrl = lastSlash !== -1 ? cleaned.substring(0, lastSlash + 1) : cleaned;
+    const pathWithoutSlash = cleaned.substring(0, lastSlash);
+    const subIdx = pathWithoutSlash.lastIndexOf("/");
+    const candidateName = subIdx !== -1 ? pathWithoutSlash.substring(subIdx + 1) : "plugin";
+    const pluginId = candidateName.toLowerCase().replace(/[^a-z0-9_\-]/g, "_") || "plugin";
+
+    return {
+      source: "direct",
+      pluginId,
+      rawUrl: cleaned,
       baseUrl
     };
   }
 
-  // 2. 标准 github.com 格式 (例如 github.com/owner/repo/index.js 或 github.com/owner/repo/plugins/calc/index.js)
-  cleaned = cleaned.replace(/^github\.com\//i, "");
-  const parts = cleaned.split("/").filter(Boolean);
-  if (parts.length < 2) return null;
+  return null;
+}
 
-  const owner = parts[0];
-  const repo = parts[1].replace(/\.git$/i, "");
-
-  let branch = "main";
-  let pathParts = parts.slice(2);
-
-  if (pathParts.length >= 2 && pathParts[0] === "blob") {
-    branch = pathParts[1];
-    pathParts = pathParts.slice(2);
-  }
-
-  // 若未指定 .js，默认指向 index.js
-  if (pathParts.length === 0 || !pathParts[pathParts.length - 1].endsWith(".js")) {
-    pathParts.push("index.js");
-  }
-
-  const fullPath = pathParts.join("/");
-  const idx = fullPath.lastIndexOf("/");
-  const baseDir = idx !== -1 ? fullPath.substring(0, idx) : "";
-  const pluginId = baseDir ? baseDir.split("/").pop() : repo;
-
-  const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fullPath}`;
-  const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${baseDir ? baseDir + "/" : ""}`;
-
-  return {
-    owner,
-    repo,
-    branch,
-    fullPath,
-    pluginId: pluginId.toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
-    rawUrl,
-    baseUrl
-  };
+/**
+ * 保持向后兼容的 GitHub 解析别名
+ */
+export function parseGithubUrl(raw) {
+  return resolvePluginUrl(raw);
 }
 
 /**
@@ -197,8 +298,8 @@ function downloadIndexJs(parsed) {
     return { code: res.body, baseUrl: parsed.baseUrl };
   }
 
-  // 回退尝试 master 分支
-  if (parsed.branch === "main" && parsed.fullPath) {
+  // GitHub 分支回退尝试 (main -> master)
+  if (parsed.source === "github" && parsed.branch === "main" && parsed.fullPath) {
     const masterUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/master/${parsed.fullPath}`;
     console.info(`main 分支未命中，尝试 master 分支: ${masterUrl}`);
     res = launcher.http.get(masterUrl, { timeout_ms: 15000 });
@@ -214,26 +315,84 @@ function downloadIndexJs(parsed) {
 }
 
 /**
- * 在受控环境安全解析 ES Module 代码，提取导出的 metadata 与 on_setup
+ * 从 metadata (dynamic_library / native / icon / assets) 及 setup 拦截中收集所有需要下载的依赖资源
  */
-function evaluatePluginModule(code) {
-  const transformed = code
-    .replace(/^\s*export\s+const\s+/gm, "const ")
-    .replace(/^\s*export\s+let\s+/gm, "let ")
-    .replace(/^\s*export\s+var\s+/gm, "var ")
-    .replace(/^\s*export\s+function\s+/gm, "function ")
-    .replace(/^\s*export\s+class\s+/gm, "class ")
-    .replace(/^\s*export\s+default\s+/gm, "const __default__ = ");
+function collectResourcePaths(meta, interceptedResources) {
+  const fileSet = new Set();
 
-  const runner = new Function(`
-    "use strict";
-    ${transformed}
-    return {
-      metadata: typeof metadata !== "undefined" ? metadata : null,
-      on_setup: typeof on_setup === "function" ? on_setup : null
-    };
-  `);
-  return runner();
+  if (meta) {
+    // 1. dynamic_library 声明的原生动态库
+    if (meta.dynamic_library && typeof meta.dynamic_library === "object") {
+      for (const key in meta.dynamic_library) {
+        const item = meta.dynamic_library[key];
+        if (typeof item === "string") {
+          fileSet.add(item);
+        } else if (item && typeof item === "object") {
+          if (item.path) fileSet.add(item.path);
+          if (item.lib_path) fileSet.add(item.lib_path);
+        }
+      }
+      if (meta.dynamic_library.lib_path) {
+        fileSet.add(meta.dynamic_library.lib_path);
+      }
+    }
+
+    // 2. native 声明的原生资源
+    if (meta.native) {
+      if (typeof meta.native === "string") {
+        fileSet.add(meta.native);
+      } else if (Array.isArray(meta.native)) {
+        for (const p of meta.native) {
+          if (typeof p === "string") fileSet.add(p);
+          else if (p && p.path) fileSet.add(p.path);
+        }
+      } else if (typeof meta.native === "object") {
+        for (const k in meta.native) {
+          const item = meta.native[k];
+          if (typeof item === "string") fileSet.add(item);
+          else if (item && item.path) fileSet.add(item.path);
+        }
+      }
+    }
+
+    // 3. icon 图标资产
+    if (typeof meta.icon === "string" && !isPresetIcon(meta.icon)) {
+      fileSet.add(meta.icon);
+    }
+
+    // 4. assets / resources 静态资源清单
+    const staticAssets = meta.assets || meta.resources || meta.files;
+    if (Array.isArray(staticAssets)) {
+      for (const a of staticAssets) {
+        if (typeof a === "string") fileSet.add(a);
+      }
+    }
+  }
+
+  // 5. on_setup 中动态拦截的图标/资产请求
+  if (Array.isArray(interceptedResources)) {
+    for (const r of interceptedResources) {
+      if (typeof r === "string" && !isPresetIcon(r)) {
+        fileSet.add(r);
+      }
+    }
+  }
+
+  return Array.from(fileSet);
+}
+
+/**
+ * 判断是否属于内置预设矢量图标 ID
+ */
+function isPresetIcon(name) {
+  if (!name || typeof name !== "string") return false;
+  const lower = name.toLowerCase().trim();
+  const presets = [
+    "folder", "dir", "file", "doc", "error", "success", "warn",
+    "warning", "info", "calc", "terminal", "cmd", "settings",
+    "gear", "notepad", "shield", "key"
+  ];
+  return presets.includes(lower);
 }
 
 /**
@@ -282,7 +441,11 @@ function removePluginFromConfig(id) {
 }
 
 /**
- * 安装单文件驱动插件 (下载 index.js -> 解析 metadata -> 下载 dynamic library -> 执行 on_setup(context) 下载资源)
+ * 安装单文件驱动插件
+ * 1. 下载 index.js
+ * 2. 在完全隔离的 QuickJS 上下文中评估 ES 模块，解析 metadata 并执行模拟 on_setup
+ * 3. 收集并下载全部 native 动态库与图标资源
+ * 4. 写入脚本并注册 config.toml，触发热重载
  */
 function executeInstall(parsed) {
   const pluginsBase = getPluginsBaseDir();
@@ -304,10 +467,56 @@ function executeInstall(parsed) {
 
   const { code: indexCode, baseUrl } = downloadRes;
 
-  // 2. 解析插件模块
-  let mod;
+  // 2. 利用完全隔离的 QuickJS 虚拟机上下文安全评估 ES 模块
+  let meta = null;
+  const interceptedIcons = [];
+
   try {
-    mod = evaluatePluginModule(indexCode);
+    if (typeof launcher.create_context === "function") {
+      const vm = launcher.create_context();
+
+      // 在隔离虚拟机中预设 mock 全局对象以捕获 setup 生命周期中的资源请求
+      vm.eval(`
+        globalThis.__captured_icons = [];
+        globalThis.launcher = {
+          cache_icon: function(p) {
+            globalThis.__captured_icons.push(p);
+            return p;
+          }
+        };
+        globalThis.self = {
+          get_config: function() { return {}; },
+          cache_icon: function(p) {
+            globalThis.__captured_icons.push(p);
+            return p;
+          }
+        };
+        globalThis.context = globalThis.self;
+      `);
+
+      // 评估目标 ES 模块
+      const modRes = vm.eval_module(indexCode);
+      meta = modRes.metadata || {};
+
+      // 若导出了 on_setup，在隔离环境中触发执行以拦截图标及静态资源调用
+      vm.eval(`
+        if (typeof on_setup === "function") {
+          try {
+            on_setup({ cache_icon: launcher.cache_icon });
+          } catch (e) {
+            // 忽略非致命设置警告
+          }
+        }
+      `);
+
+      const captured = vm.eval("globalThis.__captured_icons");
+      if (Array.isArray(captured)) {
+        for (const item of captured) interceptedIcons.push(item);
+      }
+    } else if (typeof launcher.eval_module === "function") {
+      const modRes = launcher.eval_module(indexCode);
+      meta = modRes.metadata || {};
+    }
   } catch (err) {
     const errMsg = "解析插件脚本模块失败: " + err;
     console.error(errMsg);
@@ -317,71 +526,44 @@ function executeInstall(parsed) {
     return false;
   }
 
-  const meta = mod.metadata || {};
+  if (!meta) {
+    meta = {};
+  }
+
   const pluginName = meta.name || parsed.pluginId;
   const pluginPrefix = meta.prefix || (parsed.pluginId + ":");
 
-  // 3. 检查 metadata.dynamic_library，若有则下载对应的 DLL 文件
-  if (meta.dynamic_library) {
-    for (const libKey in meta.dynamic_library) {
-      const entry = meta.dynamic_library[libKey];
-      if (entry && entry.path) {
-        const filename = getBasename(entry.path);
-        const dllUrl = resolveUrl(baseUrl, entry.path);
-        console.info(`正在下载目标插件依赖的原生动态库 [${libKey}]: ${dllUrl}`);
-        const dllRes = launcher.http.get(dllUrl, { timeout_ms: 30000 });
-        if (dllRes.ok && dllRes.buffer) {
-          launcher.fs.write(targetDir + "/" + filename, dllRes.buffer);
-          console.info(`动态库已落盘: ${targetDir}/${filename}`);
-        } else {
-          console.warn(`下载动态库失败: HTTP ${dllRes.status} ${dllRes.status_text}`);
-        }
-      }
+  // 3. 收集并下载全部原生动态链接库 (native/dynamic_library) 与图标/资产
+  const resourcesToDownload = collectResourcePaths(meta, interceptedIcons);
+  console.info(`目标插件依赖资源列表: ${JSON.stringify(resourcesToDownload)}`);
+
+  for (const relPath of resourcesToDownload) {
+    const filename = getBasename(relPath);
+    const fileUrl = resolveUrl(baseUrl, relPath);
+    console.info(`正在下载插件依赖资源 [${filename}]: ${fileUrl}`);
+
+    const fileRes = launcher.http.get(fileUrl, { timeout_ms: 30000 });
+    if (fileRes.ok && fileRes.buffer) {
+      launcher.fs.write(targetDir + "/" + filename, fileRes.buffer);
+      console.info(`资源已落盘: ${targetDir}/${filename}`);
+    } else {
+      console.warn(`下载资源 [${filename}] 失败: HTTP ${fileRes.status} ${fileRes.status_text}`);
     }
   }
 
-  // 4. 准备隔离安装 context，指向资源下载接口，并调用目标插件的 on_setup(context)
-  if (typeof mod.on_setup === "function") {
-    console.info("在安装环境中准备 context 并执行目标插件 on_setup(context)...");
-    const installContext = {
-      cache_icon: function(iconPath) {
-        if (typeof iconPath === "string") {
-          const trimmed = iconPath.trim();
-          const filename = getBasename(trimmed);
-          const iconUrl = resolveUrl(baseUrl, trimmed);
-          console.info("on_setup 请求下载图标资源: " + iconUrl);
-          const iconRes = launcher.http.get(iconUrl, { timeout_ms: 15000 });
-          if (iconRes.ok && iconRes.buffer) {
-            launcher.fs.write(targetDir + "/" + filename, iconRes.buffer);
-            console.info(`图标资源已落盘: ${targetDir}/${filename}`);
-            return filename;
-          }
-          return iconPath;
-        }
-        return "file";
-      }
-    };
-
-    try {
-      mod.on_setup(installContext);
-    } catch (err) {
-      console.warn("调用 on_setup 产生警告: " + err);
-    }
-  }
-
-  // 5. 保存 index.js 脚本至插件目录
+  // 4. 保存 index.js 脚本至插件目录
   launcher.fs.write(targetDir + "/index.js", indexCode);
   console.info(`插件入口脚本已写入: ${targetDir}/index.js`);
 
-  // 6. 更新 config.toml
+  // 5. 更新 config.toml
   addPluginToConfig(parsed.pluginId, pluginName, pluginPrefix, `plugins/${parsed.pluginId}`);
 
-  // 7. 触发主程序热重载
+  // 6. 触发主程序热重载
   if (launcher.app && launcher.app.reload) {
     launcher.app.reload();
   }
 
-  // 8. 弹窗提醒安装成功
+  // 7. 弹窗提醒安装成功
   if (launcher.message_box) {
     launcher.message_box(
       `插件 [${pluginName}] (${parsed.pluginId})\n前缀: ${pluginPrefix}\n已成功安装并热重载生效！`,
@@ -442,7 +624,7 @@ export function on_query(input) {
       {
         id: "guide-install",
         title: "安装插件 (Install Plugin)",
-        subtitle: "输入: install <github.com/xxx/yyy/index.js>",
+        subtitle: "输入: install <github.com/xxx/yyy/index.js 或 raw 链接>",
         icon: "info",
         badge: "管理",
         payload: { action: "guide" }
@@ -467,8 +649,6 @@ export function on_query(input) {
     const plugins = getInstalledPlugins();
     const query = afterUninstall.toLowerCase();
 
-    // 当输入 uninstall 或 uninstall 空格时，列出全部可卸载插件
-    // 当输入 uninstall xxx 时，按插件 id 或名字前缀匹配
     const filtered = query
       ? plugins.filter(p => p.id.toLowerCase().startsWith(query) || p.name.toLowerCase().startsWith(query))
       : plugins;
@@ -506,8 +686,8 @@ export function on_query(input) {
       return [
         {
           id: "prompt-install-url",
-          title: "请输入 GitHub 插件 index.js 地址",
-          subtitle: "例如: install github.com/owner/repo/index.js",
+          title: "请输入插件 index.js 地址",
+          subtitle: "例如: install github.com/owner/repo/index.js 或 direct URL",
           icon: "info",
           badge: "安装",
           payload: { action: "guide" }
@@ -515,13 +695,13 @@ export function on_query(input) {
       ];
     }
 
-    const parsed = parseGithubUrl(target);
+    const parsed = resolvePluginUrl(target);
     if (!parsed) {
       return [
         {
           id: "invalid-url",
-          title: "无效的 GitHub 地址格式",
-          subtitle: `已输入: "${target}"，示例: github.com/owner/repo/index.js`,
+          title: "无效的插件地址格式",
+          subtitle: `已输入: "${target}"，支持 GitHub, Gitee, GitLab 或 HTTP/HTTPS 直链`,
           icon: "warn",
           badge: "错误",
           payload: { action: "none" }
@@ -546,7 +726,7 @@ export function on_query(input) {
     {
       id: "guide-install",
       title: "安装插件 (Install Plugin)",
-      subtitle: "输入: install <github.com/xxx/yyy/index.js>",
+      subtitle: "输入: install <github.com/xxx/yyy/index.js 或 raw 链接>",
       icon: "info",
       badge: "管理",
       payload: { action: "guide" }

@@ -4,6 +4,7 @@ pub mod host_env;
 pub mod host_fs;
 pub mod host_http;
 pub mod host_process;
+pub mod host_vm;
 pub mod model;
 
 use crate::config::PluginConfig;
@@ -134,6 +135,9 @@ pub fn setup_shared_launcher_apis<'js>(
 
     // 注册应用生命周期与配置管理能力 (launcher.app)
     let _ = host_app::register_app(ctx, &launcher, hwnd, config_path);
+
+    // 注册虚拟机与隔离上下文能力 (launcher.create_context, launcher.eval_module)
+    let _ = host_vm::register_vm(ctx, &launcher);
 
     // launcher.clipboard.write_text(text) / launcher.clipboard.write(text)
     let copy_fn = Function::new(ctx.clone(), |text: String| {

@@ -216,3 +216,101 @@ fn test_plugin_host_http() {
         }
     });
 }
+
+#[test]
+fn test_launcher_vm_and_isolated_context() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::full(&rt).unwrap();
+
+    ctx.with(|ctx| {
+        let launcher = Object::new(ctx.clone()).unwrap();
+        one_launcher::plugin::host_vm::register_vm(&ctx, &launcher).unwrap();
+        ctx.globals().set("launcher", launcher).unwrap();
+
+        // 1. 测试 launcher.create_context 与 isolated eval
+        let eval_res: i32 = ctx
+            .eval(
+                r#"
+            {
+                const vm1 = launcher.create_context();
+                vm1.eval("21 * 2")
+            }
+        "#,
+            )
+            .unwrap();
+        assert_eq!(eval_res, 42);
+
+        // 2. 测试 isolated context 独立作用域不污染当前全局
+        ctx.eval::<(), _>(
+            r#"
+            {
+                const vm2 = launcher.create_context();
+                vm2.eval("globalThis.secret = 'isolated_val';");
+            }
+        "#,
+        )
+        .unwrap();
+        let parent_secret: rquickjs::Value = ctx.eval("globalThis.secret").unwrap();
+        assert!(parent_secret.is_undefined());
+        let parent_secret: rquickjs::Value = ctx.eval("globalThis.secret").unwrap();
+        assert!(parent_secret.is_undefined());
+
+        // 3. 测试 launcher.eval_module 静态方法解析 ES 模块与 metadata
+        let mod_res: Object = ctx
+            .eval(
+                r#"
+            launcher.eval_module(`
+                export const metadata = {
+                    name: "测试模块",
+                    prefix: "tm:",
+                    dynamic_library: {
+                        MyLib: { path: "./mylib.dll" }
+                    }
+                };
+                export function on_setup() {}
+                export function on_query(input) { return []; }
+                export function on_select(item) {}
+            `)
+        "#,
+            )
+            .unwrap();
+        let meta: Object = mod_res.get("metadata").unwrap();
+        let name: String = meta.get("name").unwrap();
+        let prefix: String = meta.get("prefix").unwrap();
+        assert_eq!(name, "测试模块");
+        assert_eq!(prefix, "tm:");
+
+        let exports: Vec<String> = mod_res.get("exports").unwrap();
+        assert!(exports.contains(&"metadata".to_string()));
+        assert!(exports.contains(&"on_setup".to_string()));
+        assert!(exports.contains(&"on_query".to_string()));
+        assert!(exports.contains(&"on_select".to_string()));
+
+        // 4. 测试 vm.eval_module 与 setup 中的 mock 钩子捕获
+        let intercepted: Vec<String> = ctx
+            .eval(
+                r#"
+            const vm2 = launcher.create_context();
+            vm2.eval(`
+                globalThis.__captured_icons = [];
+                globalThis.launcher = {
+                    cache_icon: (p) => {
+                        globalThis.__captured_icons.push(p);
+                        return p;
+                    }
+                };
+            `);
+            vm2.eval_module(`
+                export const metadata = { name: "IconTest", prefix: "it:" };
+                export function on_setup() {
+                    launcher.cache_icon("./custom_icon.png");
+                }
+            `);
+            vm2.call("on_setup");
+            vm2.eval("globalThis.__captured_icons")
+        "#,
+            )
+            .unwrap();
+        assert_eq!(intercepted, vec!["./custom_icon.png"]);
+    });
+}

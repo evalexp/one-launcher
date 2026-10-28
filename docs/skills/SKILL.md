@@ -401,7 +401,41 @@ const cfgPath = launcher.app.config_path(); // 获取 config.toml 绝对路径
 
 ---
 
-### 4.7 剪贴板操作 (`launcher.clipboard`)
+### 4.7 虚拟机与完全隔离上下文 (`launcher.create_context`, `launcher.eval_module`)
+
+宿主提供了创建完全隔离的 QuickJS 独立运行时（独立堆与垃圾回收器）以及安全评估 ES 模块的能力。此能力特别适合在插件管理器中预解析第三方脚本、在沙盒环境中拦截资源注册，或执行动态安全评估：
+
+```javascript
+// 1. 创建全新的完全隔离 QuickJS 上下文
+const vm = launcher.create_context();
+
+// 2. 在隔离环境中安全执行代码 (支持捕获或模拟环境变量与钩子)
+vm.eval(`
+  globalThis.__captured = [];
+  globalThis.launcher = {
+    cache_icon: (p) => { globalThis.__captured.push(p); return p; }
+  };
+`);
+
+// 3. 评估 ES Module 脚本，提取导出的 metadata 与导出符号列表
+const mod = vm.eval_module(`
+  export const metadata = { name: "我的工具", prefix: "tool:" };
+  export function on_setup() { launcher.cache_icon("./icon.png"); }
+`);
+console.info(mod.metadata.name); // -> "我的工具"
+console.info(mod.exports);       // -> ["metadata", "on_setup"]
+
+// 4. 调用隔离上下文中的函数
+vm.call("on_setup");
+const capturedIcons = vm.eval("globalThis.__captured"); // -> ["./icon.png"]
+
+// 5. 便捷静态 ES 模块评估方法
+const result = launcher.eval_module(moduleCodeString);
+```
+
+---
+
+### 4.8 剪贴板操作 (`launcher.clipboard`)
 
 ```javascript
 launcher.clipboard.write_text("需要拷贝的字符串");
@@ -410,7 +444,7 @@ launcher.clipboard.write("别名方法");
 
 ---
 
-### 4.8 控制台日志 (`console`)
+### 4.9 控制台日志 (`console`)
 
 QuickJS 中的 `console` 已桥接至 Rust 原生 `tracing` 日志引擎，支持日志级别输出：
 

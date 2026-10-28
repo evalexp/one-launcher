@@ -121,7 +121,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 ## 5. 当前开发进度与里程碑总结
 
 - [x] **基础设施重构与体积优化**：
-  - 核心架构稳定，单文件 Release 编译体积控制在 ~3.2 MB。
+  - 核心架构稳定，单文件 Release 编译体积控制在 ~3.8 MB（包含 QuickJS 引擎与 reqwest HTTPS 协议栈）。
   - 内存占用控制在 10MB 左右。
 - [x] **插件 HTTP 引擎第三方库重构**：
   - 引入成熟三方网络库 `reqwest`，替换原本基于 Windows 原生 WinHttp 的底层实现，提供高可靠的 HTTPS 连接、证书验证与重定向支持。
@@ -130,6 +130,13 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
   - 插件分配独立隔离的 QuickJS Context，互相之间全局变量与状态彻底隔离。
   - 引入 `self` / `context` 插件私有上下文对象，通过 `self.get_config()` 获取自有配置。
   - `on_setup` 改为无参设计，`cache_icon` 整合至 `launcher` 与 `self`。
+- [x] **完全隔离虚拟机与 ES 模块安全评估能力**：
+  - 宿主提供 `launcher.create_context()`，按需生成独立 QuickJS 运行时与沙盒上下文。
+  - 宿主提供 `launcher.eval_module()`，支持以原生 ES Module 规范直接评估第三方脚本，安全提取 `metadata` 与导出列表，无需脆弱的字符串正则转换。
+- [x] **插件管理器全功能重写与多源 URL Resolver**：
+  - 支持多源代码托管平台直链解析（GitHub 自动映射至 raw.githubusercontent.com、Gitee、GitLab 以及任意通用 HTTP/HTTPS 链接）。
+  - 自动化依赖收集：自动扫描 `metadata.dynamic_library`、`metadata.native` 原生动态链接库、`metadata.icon` / `metadata.assets` 静态资源，并在沙盒环境中预执行 `on_setup` 拦截动态注册图标。
+  - 全流程自动化：资源全量离线下载 -> 目录创建 -> 配置热注册 -> 宿主实时重载。
 - [x] **配置清理与简化**：
   - 移除无用外观配置，精简 `AppearanceConfig`。
   - 插件 `PluginConfig.path` 设为可选，默认解析回退到 `plugins/<plugin-id>`。
@@ -144,5 +151,5 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
   - 统一建立 `docs/skills/SKILL.md`，规范化生命周期、能力矩阵、自查清单与调试指南。
   - 移除冗余的 `plugin_development_guide.md`，文档唯一维护。
 - [x] **质量与自动化测试**：
-  - 涵盖配置解析、热键、应用索引模糊匹配、QuickJS 插件生命周期与 Context 隔离、各官方插件业务逻辑、CLI 隔离执行、宿主文件/HTTP能力。
-  - 全套 13 组测试套件 19 个用例 100% 通过，0 编译警告。
+  - 涵盖配置解析、热键、应用索引模糊匹配、QuickJS 插件生命周期与 Context 隔离、各官方插件业务逻辑、CLI 隔离执行、宿主文件/HTTP能力、独立虚拟机与隔离上下文、插件管理器多平台 URL 解析与 native 依赖下载。
+  - 全套 14 组测试套件 20 个用例 100% 通过，0 编译警告。
