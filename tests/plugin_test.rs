@@ -120,9 +120,12 @@ fn test_plugin_context_isolation_and_shared_launcher_apis() {
             default_config: { a_val: 111 }
         };
         export function on_setup() {
-            // 验证 launcher 保持为纯净共享 API，不携带私有 config
+            // 验证 launcher 保持为纯净共享 API，不携带私有 config；验证 context 不存在，仅保留 launcher 与 self
             if (typeof launcher.config !== "undefined") {
                 throw new Error("launcher.config 必须为 undefined");
+            }
+            if (typeof context !== "undefined") {
+                throw new Error("context 必须为 undefined，全局仅保留 launcher 与 self");
             }
         }
         export function on_query(input) {
@@ -130,7 +133,7 @@ fn test_plugin_context_isolation_and_shared_launcher_apis() {
             return [{
                 id: "item_a",
                 title: "A:" + cfg.a_val + ":" + globalThis.leak_test,
-                subtitle: "context:" + context.get_id(),
+                subtitle: "self:" + self.get_id(),
                 icon: "file",
                 badge: "A",
                 payload: {}
@@ -190,7 +193,7 @@ fn test_plugin_context_isolation_and_shared_launcher_apis() {
     let res_a = mgr.query("p_a", "");
     assert_eq!(res_a.len(), 1);
     assert_eq!(res_a[0].title, "A:111:plugin_A");
-    assert_eq!(res_a[0].subtitle, "context:p_a");
+    assert_eq!(res_a[0].subtitle, "self:p_a");
 
     // 查询 B: 验证完全隔离，未被 A 的全局变量污染，且获取自己的 config 222
     let res_b = mgr.query("p_b", "");

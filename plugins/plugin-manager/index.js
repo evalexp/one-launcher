@@ -49,35 +49,63 @@ function getPluginsBaseDir() {
 function getInstalledPlugins() {
   const list = [];
   const seenIds = new Set();
-
-  // 1. 从 config.toml 中解析声明的插件
   const configPath = typeof launcher !== "undefined" && launcher.app && launcher.app.config_path;
+
+  // 1. 从 config.toml 中解析声明的插件配置段（跳过注释行）
   if (configPath && launcher.fs && launcher.fs.exists(configPath)) {
     const tomlContent = launcher.fs.read_text(configPath) || "";
-    const pluginHeaderRegex = /\[plugins\.([a-zA-Z0-9_\-]+)\]/g;
-    let match;
-    while ((match = pluginHeaderRegex.exec(tomlContent)) !== null) {
-      const id = match[1];
-      if (seenIds.has(id)) continue;
-      seenIds.add(id);
+    const lines = tomlContent.split("\n");
+    let currentId = null;
+    let currentSectionLines = [];
 
-      const startIdx = match.index;
-      const nextMatch = tomlContent.slice(startIdx + match[0].length).search(/\n\[plugins\./);
-      const sectionText = nextMatch !== -1
-        ? tomlContent.slice(startIdx, startIdx + match[0].length + nextMatch)
-        : tomlContent.slice(startIdx);
+    const processCurrentSection = () => {
+      if (!currentId || seenIds.has(currentId)) return;
+      seenIds.add(currentId);
+      const text = currentSectionLines.join("\n");
+      const nameM = text.match(/^\s*name\s*=\s*['"](.*?)['"]/m);
+      const prefixM = text.match(/^\s*prefix\s*=\s*['"](.*?)['"]/m);
+      const pathM = text.match(/^\s*path\s*=\s*['"](.*?)['"]/m);
+      const enabledM = text.match(/^\s*enabled\s*=\s*(true|false)/m);
 
-      const nameM = sectionText.match(/name\s*=\s*['"](.*?)['"]/);
-      const prefixM = sectionText.match(/prefix\s*=\s*['"](.*?)['"]/);
-      const pathM = sectionText.match(/path\s*=\s*['"](.*?)['"]/);
+      const relPath = pathM ? pathM[1] : ("plugins/" + currentId);
+      const isEnabled = enabledM ? (enabledM[1] === "true") : true;
+
+      // 验证在磁盘上是否存在
+      const baseDir = getPluginsBaseDir();
+      const checkPath1 = relPath;
+      const checkPath2 = baseDir + "/" + currentId;
+      const diskExists = (launcher.fs.exists(checkPath1) || launcher.fs.exists(checkPath2) || launcher.fs.exists(checkPath1 + "/index.js") || launcher.fs.exists(checkPath2 + "/index.js"));
 
       list.push({
-        id,
-        name: nameM ? nameM[1] : id,
+        id: currentId,
+        name: nameM ? nameM[1] : currentId,
         prefix: prefixM ? prefixM[1] : "",
-        path: pathM ? pathM[1] : ("plugins/" + id)
+        path: relPath,
+        enabled: isEnabled,
+        diskExists
       });
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      // 严格跳过任何注释行，避免把注释模板当做实际声明
+      if (trimmed.startsWith("#")) continue;
+
+      const headerMatch = trimmed.match(/^\[plugins\.([a-zA-Z0-9_\-]+)\]$/);
+      if (headerMatch) {
+        processCurrentSection();
+        currentId = headerMatch[1];
+        currentSectionLines = [];
+      } else if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        processCurrentSection();
+        currentId = null;
+        currentSectionLines = [];
+      } else if (currentId) {
+        currentSectionLines.push(line);
+      }
     }
+    processCurrentSection();
   }
 
   // 2. 从本地 plugins 目录扫描已存在且包含 index.js 的文件夹
@@ -91,20 +119,26 @@ function getInstalledPlugins() {
           const indexFile = (entry.path.replace(/\\/g, "/") + "/index.js");
           let name = id;
           let prefix = "";
+          let hasIndex = false;
           if (launcher.fs.exists(indexFile)) {
+            hasIndex = true;
             const code = launcher.fs.read_text(indexFile) || "";
             const nm = code.match(/name:\s*['"](.*?)['"]/);
             const pr = code.match(/prefix:\s*['"](.*?)['"]/);
             if (nm) name = nm[1];
             if (pr) prefix = pr[1];
           }
-          list.push({
-            id,
-            name,
-            prefix,
-            path: entry.path
-          });
-          seenIds.add(id);
+          if (hasIndex) {
+            list.push({
+              id,
+              name,
+              prefix,
+              path: entry.path,
+              enabled: false,
+              diskExists: true
+            });
+            seenIds.add(id);
+          }
         }
       }
     }
@@ -190,7 +224,7 @@ export function resolvePluginUrl(raw) {
     };
   }
 
-  // 3. Gitee 格式 (gitee.com/owner/repo/raw/master/index.js 或 gitee.com/owner/repo/blob/master/index.js)
+  // 3. Gitee 格式
   const giteePrefix = /^https?:\/\/gitee\.com\//i;
   if (giteePrefix.test(cleaned) || cleaned.toLowerCase().startsWith("gitee.com/")) {
     const withoutPrefix = cleaned.replace(/^https?:\/\//i, "").substring("gitee.com/".length);
@@ -225,7 +259,7 @@ export function resolvePluginUrl(raw) {
     }
   }
 
-  // 4. GitLab 格式 (gitlab.com/owner/repo/-/raw/main/index.js)
+  // 4. GitLab 格式
   const gitlabPrefix = /^https?:\/\/gitlab\.com\//i;
   if (gitlabPrefix.test(cleaned) || cleaned.toLowerCase().startsWith("gitlab.com/")) {
     const withoutPrefix = cleaned.replace(/^https?:\/\//i, "").substring("gitlab.com/".length);
@@ -261,7 +295,7 @@ export function resolvePluginUrl(raw) {
     }
   }
 
-  // 5. 通用 HTTP / HTTPS 直接下载链接 (如局域网测试服务器、CDN 或私有部署端点)
+  // 5. 通用 HTTP / HTTPS 直接下载链接
   if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
     const lastSlash = cleaned.lastIndexOf("/");
     const baseUrl = lastSlash !== -1 ? cleaned.substring(0, lastSlash + 1) : cleaned;
@@ -281,9 +315,6 @@ export function resolvePluginUrl(raw) {
   return null;
 }
 
-/**
- * 保持向后兼容的 GitHub 解析别名
- */
 export function parseGithubUrl(raw) {
   return resolvePluginUrl(raw);
 }
@@ -298,7 +329,6 @@ function downloadIndexJs(parsed) {
     return { code: res.body, baseUrl: parsed.baseUrl };
   }
 
-  // GitHub 分支回退尝试 (main -> master)
   if (parsed.source === "github" && parsed.branch === "main" && parsed.fullPath) {
     const masterUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/master/${parsed.fullPath}`;
     console.info(`main 分支未命中，尝试 master 分支: ${masterUrl}`);
@@ -381,9 +411,6 @@ function collectResourcePaths(meta, interceptedResources) {
   return Array.from(fileSet);
 }
 
-/**
- * 判断是否属于内置预设矢量图标 ID
- */
 function isPresetIcon(name) {
   if (!name || typeof name !== "string") return false;
   const lower = name.toLowerCase().trim();
@@ -424,7 +451,74 @@ function addPluginToConfig(id, name, prefix, relPath) {
 }
 
 /**
- * 从 config.toml 中移除插件配置段
+ * 设置插件的启用/禁用状态 (enabled = true / false)
+ */
+function setPluginEnabled(id, enabled) {
+  const configPath = launcher.app && launcher.app.config_path;
+  if (!configPath || !launcher.fs.exists(configPath)) {
+    console.error("无法定位配置文件: " + configPath);
+    return false;
+  }
+
+  let content = launcher.fs.read_text(configPath) || "";
+  const lines = content.split("\n");
+  const newLines = [];
+  let inTargetSection = false;
+  let sectionFound = false;
+  let enabledLineModified = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed.startsWith("#") && trimmed === `[plugins.${id}]`) {
+      inTargetSection = true;
+      sectionFound = true;
+      newLines.push(line);
+      continue;
+    }
+
+    if (inTargetSection) {
+      if (!trimmed.startsWith("#") && trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        if (!enabledLineModified) {
+          newLines.push(`enabled = ${enabled}`);
+          enabledLineModified = true;
+        }
+        inTargetSection = false;
+      } else if (trimmed.startsWith("enabled")) {
+        newLines.push(`enabled = ${enabled}`);
+        enabledLineModified = true;
+        continue;
+      }
+    }
+    newLines.push(line);
+  }
+
+  if (inTargetSection && !enabledLineModified) {
+    newLines.push(`enabled = ${enabled}`);
+    enabledLineModified = true;
+  }
+
+  if (!sectionFound) {
+    if (newLines.length > 0 && newLines[newLines.length - 1].trim() !== "") {
+      newLines.push("");
+    }
+    newLines.push(`[plugins.${id}]`);
+    newLines.push(`enabled = ${enabled}`);
+  }
+
+  const newContent = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
+  launcher.fs.write(configPath, newContent);
+  console.info(`已更新插件 [${id}] enabled = ${enabled}`);
+
+  if (launcher.app && launcher.app.reload) {
+    launcher.app.reload();
+  }
+  return true;
+}
+
+/**
+ * 从 config.toml 中移除指定插件段
  */
 function removePluginFromConfig(id) {
   const configPath = launcher.app && launcher.app.config_path;
@@ -433,19 +527,39 @@ function removePluginFromConfig(id) {
   }
 
   let content = launcher.fs.read_text(configPath) || "";
-  const blockRegex = new RegExp(`\\n*\\[plugins\\.${id}(\\.[^\\]]+)?\\][\\s\\S]*?(?=(\\n\\[plugins\\.[a-zA-Z0-9_\\]]|\\n\\[[a-zA-Z0-9_\\]]|$))`, "g");
-  content = content.replace(blockRegex, "");
-  content = content.replace(/\n{3,}/g, "\n\n");
-  launcher.fs.write(configPath, content);
-  console.info(`已从配置文件中移除 [plugins.${id}] 声明`);
+  const lines = content.split("\n");
+  const newLines = [];
+  let inTargetSection = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // 只有非注释行完全匹配 [plugins.<id>] 或 [plugins.<id>.xxx] 才进入目标段
+    if (!trimmed.startsWith("#") && (trimmed === `[plugins.${id}]` || trimmed.startsWith(`[plugins.${id}.`))) {
+      inTargetSection = true;
+      continue;
+    }
+
+    if (inTargetSection) {
+      if (!trimmed.startsWith("#") && trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        // 进入下一个非注释配置节，退出跳过状态
+        inTargetSection = false;
+      } else {
+        continue; // 跳过目标配置节的内容
+      }
+    }
+
+    newLines.push(line);
+  }
+
+  const newContent = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
+  launcher.fs.write(configPath, newContent);
+  console.info(`已从配置文件中彻底移除 [plugins.${id}] 声明`);
 }
 
 /**
  * 安装单文件驱动插件
- * 1. 下载 index.js
- * 2. 在完全隔离的 QuickJS 上下文中评估 ES 模块，解析 metadata 并执行模拟 on_setup
- * 3. 收集并下载全部 native 动态库与图标资源
- * 4. 写入脚本并注册 config.toml，触发热重载
  */
 function executeInstall(parsed) {
   const pluginsBase = getPluginsBaseDir();
@@ -475,7 +589,7 @@ function executeInstall(parsed) {
     if (typeof launcher.create_context === "function") {
       const vm = launcher.create_context();
 
-      // 在隔离虚拟机中预设 mock 全局对象以捕获 setup 生命周期中的资源请求
+      // 在隔离虚拟机中严格只预设 launcher 与 self
       vm.eval(`
         globalThis.__captured_icons = [];
         globalThis.launcher = {
@@ -491,18 +605,17 @@ function executeInstall(parsed) {
             return p;
           }
         };
-        globalThis.context = globalThis.self;
       `);
 
       // 评估目标 ES 模块
       const modRes = vm.eval_module(indexCode);
       meta = modRes.metadata || {};
 
-      // 若导出了 on_setup，在隔离环境中触发执行以拦截图标及静态资源调用
+      // 严格无参调用 on_setup()
       vm.eval(`
         if (typeof on_setup === "function") {
           try {
-            on_setup({ cache_icon: launcher.cache_icon });
+            on_setup();
           } catch (e) {
             // 忽略非致命设置警告
           }
@@ -582,7 +695,7 @@ function executeInstall(parsed) {
 function executeUninstall(pluginId, pluginPath) {
   console.info(`准备卸载插件: [${pluginId}] 路径: ${pluginPath}`);
 
-  // 1. 从 config.toml 中移除配置
+  // 1. 从 config.toml 中彻底逐行移除配置
   removePluginFromConfig(pluginId);
 
   // 2. 删除磁盘对应文件夹
@@ -612,27 +725,43 @@ function executeUninstall(pluginId, pluginPath) {
 }
 
 /**
- * 查询输入处理 (响应 pm: install 与 pm: uninstall)
+ * 查询输入处理 (响应 pm: install, pm: enable, pm: disable, pm: uninstall)
  */
 export function on_query(input) {
   const raw = (input || "").trim();
   const lower = raw.toLowerCase();
 
-  // 1. 空输入：展示顶层指令选择
+  // 1. 空输入：展示顶层四大管理操作
   if (!raw) {
     return [
       {
         id: "guide-install",
         title: "安装插件 (Install Plugin)",
-        subtitle: "输入: install <github.com/xxx/yyy/index.js 或 raw 链接>",
+        subtitle: "输入: install <github/gitee/直链> 下载并安装新插件",
         icon: "info",
+        badge: "管理",
+        payload: { action: "guide" }
+      },
+      {
+        id: "guide-enable",
+        title: "启用插件 (Enable Plugin)",
+        subtitle: "输入: enable 浏览当前已禁用的插件并一键启用",
+        icon: "success",
+        badge: "管理",
+        payload: { action: "guide" }
+      },
+      {
+        id: "guide-disable",
+        title: "禁用插件 (Disable Plugin)",
+        subtitle: "输入: disable 浏览当前已启用的插件并一键禁用",
+        icon: "warn",
         badge: "管理",
         payload: { action: "guide" }
       },
       {
         id: "guide-uninstall",
         title: "卸载插件 (Uninstall Plugin)",
-        subtitle: "输入: uninstall 浏览已安装列表或指定插件名前缀",
+        subtitle: "输入: uninstall 浏览已安装列表或指定插件名回车彻底卸载",
         icon: "error",
         badge: "管理",
         payload: { action: "guide" }
@@ -640,25 +769,103 @@ export function on_query(input) {
     ];
   }
 
-  // 2. 用户正在输入 uninstall 指令
+  // 2. 启用插件 (enable / en)
+  if (lower.startsWith("enable") || lower.startsWith("en")) {
+    const afterEnable = lower.startsWith("enable")
+      ? raw.substring(6).trim()
+      : raw.substring(2).trim();
+
+    const plugins = getInstalledPlugins();
+    // 仅列出当前 enabled === false 的插件
+    const disabledPlugins = plugins.filter(p => !p.enabled);
+    const query = afterEnable.toLowerCase();
+
+    const filtered = query
+      ? disabledPlugins.filter(p => p.id.toLowerCase().includes(query) || p.name.toLowerCase().includes(query))
+      : disabledPlugins;
+
+    if (filtered.length === 0) {
+      return [
+        {
+          id: "no-disabled-plugins",
+          title: "当前没有已禁用的插件",
+          subtitle: query ? `未找到匹配 "${query}" 的已禁用插件` : "所有已安装插件均处于启用状态",
+          icon: "info",
+          badge: "提示",
+          payload: { action: "none" }
+        }
+      ];
+    }
+
+    return filtered.map(p => ({
+      id: `enable-${p.id}`,
+      title: `启用插件: ${p.name} (${p.id})`,
+      subtitle: `前缀: ${p.prefix || "无"} | 路径: ${p.path} (回车启用并热重载)`,
+      icon: "success",
+      badge: "启用",
+      payload: { action: "enable", pluginId: p.id, pluginName: p.name }
+    }));
+  }
+
+  // 3. 禁用插件 (disable / dis)
+  if (lower.startsWith("disable") || lower.startsWith("dis")) {
+    const afterDisable = lower.startsWith("disable")
+      ? raw.substring(7).trim()
+      : raw.substring(3).trim();
+
+    const plugins = getInstalledPlugins();
+    // 仅列出当前 enabled === true 的插件（排除插件管理器自身）
+    const enabledPlugins = plugins.filter(p => p.enabled && p.id !== "plugin-manager");
+    const query = afterDisable.toLowerCase();
+
+    const filtered = query
+      ? enabledPlugins.filter(p => p.id.toLowerCase().includes(query) || p.name.toLowerCase().includes(query))
+      : enabledPlugins;
+
+    if (filtered.length === 0) {
+      return [
+        {
+          id: "no-enabled-plugins",
+          title: "当前没有可禁用的插件",
+          subtitle: query ? `未找到匹配 "${query}" 的活跃插件` : "当前没有其他处于启用状态的插件",
+          icon: "info",
+          badge: "提示",
+          payload: { action: "none" }
+        }
+      ];
+    }
+
+    return filtered.map(p => ({
+      id: `disable-${p.id}`,
+      title: `禁用插件: ${p.name} (${p.id})`,
+      subtitle: `前缀: ${p.prefix || "无"} | 路径: ${p.path} (回车禁用并热重载)`,
+      icon: "warn",
+      badge: "禁用",
+      payload: { action: "disable", pluginId: p.id, pluginName: p.name }
+    }));
+  }
+
+  // 4. 卸载插件 (uninstall / un)
   if (lower.startsWith("uninstall") || lower.startsWith("un")) {
     const afterUninstall = lower.startsWith("uninstall")
       ? raw.substring(9).trim()
       : raw.substring(2).trim();
 
     const plugins = getInstalledPlugins();
+    // 排除插件管理器自身
+    const candidatePlugins = plugins.filter(p => p.id !== "plugin-manager");
     const query = afterUninstall.toLowerCase();
 
     const filtered = query
-      ? plugins.filter(p => p.id.toLowerCase().startsWith(query) || p.name.toLowerCase().startsWith(query))
-      : plugins;
+      ? candidatePlugins.filter(p => p.id.toLowerCase().includes(query) || p.name.toLowerCase().includes(query))
+      : candidatePlugins;
 
     if (filtered.length === 0) {
       return [
         {
           id: "no-plugins-found",
           title: "未找到匹配的可卸载插件",
-          subtitle: query ? `没有以前缀 "${query}" 开头的插件` : "当前没有已安装或声明的插件",
+          subtitle: query ? `没有匹配 "${query}" 的插件` : "当前没有已安装或声明的第三方插件",
           icon: "warn",
           badge: "提示",
           payload: { action: "none" }
@@ -669,14 +876,14 @@ export function on_query(input) {
     return filtered.map(p => ({
       id: `uninstall-${p.id}`,
       title: `卸载插件: ${p.name} (${p.id})`,
-      subtitle: `前缀: ${p.prefix || "无"} | 路径: ${p.path} (回车彻底卸载)`,
+      subtitle: `状态: ${p.enabled ? "已启用" : "已禁用"} | 路径: ${p.path} (回车彻底卸载)`,
       icon: "error",
       badge: "卸载",
-      payload: { action: "uninstall", pluginId: p.id, pluginPath: p.path }
+      payload: { action: "uninstall", pluginId: p.id, pluginPath: p.path, pluginName: p.name }
     }));
   }
 
-  // 3. 用户正在输入 install 指令
+  // 5. 安装指令 (install / in)
   if (lower.startsWith("install") || lower.startsWith("in")) {
     const target = lower.startsWith("install")
       ? raw.substring(7).trim()
@@ -721,20 +928,36 @@ export function on_query(input) {
     ];
   }
 
-  // 4. 输入前缀匹配顶层选项 (如仅输入 "i" 或 "u")
+  // 6. 前缀缩写匹配导航 (如输入 i / e / d / u)
   const options = [
     {
       id: "guide-install",
       title: "安装插件 (Install Plugin)",
-      subtitle: "输入: install <github.com/xxx/yyy/index.js 或 raw 链接>",
+      subtitle: "输入: install <github/gitee/直链> 下载并安装新插件",
       icon: "info",
+      badge: "管理",
+      payload: { action: "guide" }
+    },
+    {
+      id: "guide-enable",
+      title: "启用插件 (Enable Plugin)",
+      subtitle: "输入: enable 浏览当前已禁用的插件并一键启用",
+      icon: "success",
+      badge: "管理",
+      payload: { action: "guide" }
+    },
+    {
+      id: "guide-disable",
+      title: "禁用插件 (Disable Plugin)",
+      subtitle: "输入: disable 浏览当前已启用的插件并一键禁用",
+      icon: "warn",
       badge: "管理",
       payload: { action: "guide" }
     },
     {
       id: "guide-uninstall",
       title: "卸载插件 (Uninstall Plugin)",
-      subtitle: "输入: uninstall 浏览已安装列表或指定插件名前缀",
+      subtitle: "输入: uninstall 浏览已安装列表或指定插件名回车彻底卸载",
       icon: "error",
       badge: "管理",
       payload: { action: "guide" }
@@ -753,6 +976,18 @@ export function on_select(item) {
 
   if (payload.action === "install" && payload.parsed) {
     executeInstall(payload.parsed);
+  } else if (payload.action === "enable" && payload.pluginId) {
+    if (setPluginEnabled(payload.pluginId, true)) {
+      if (launcher.message_box) {
+        launcher.message_box(`插件 [${payload.pluginName || payload.pluginId}] 已成功启用并热重载！`, "插件管理", "info");
+      }
+    }
+  } else if (payload.action === "disable" && payload.pluginId) {
+    if (setPluginEnabled(payload.pluginId, false)) {
+      if (launcher.message_box) {
+        launcher.message_box(`插件 [${payload.pluginName || payload.pluginId}] 已成功禁用并热重载！`, "插件管理", "info");
+      }
+    }
   } else if (payload.action === "uninstall" && payload.pluginId) {
     executeUninstall(payload.pluginId, payload.pluginPath);
   }

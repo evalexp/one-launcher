@@ -83,7 +83,7 @@ export function on_select(item) {
  * 以及 otp:s[ecret]=xxx&a[lgorithm]=yyy&i[nterval]=zzz 多元化参数，参数名忽略大小写。
  */
 function parseParams(rawInput) {
-  const cfg = launcher.config || {};
+  const cfg = (typeof self !== "undefined" && self.get_config && self.get_config()) || {};
   let defaultInterval = (cfg.interval && Number(cfg.interval)) || 30;
   let defaultAlgorithm = (cfg.algorithm && String(cfg.algorithm).toUpperCase()) || "SHA1";
 

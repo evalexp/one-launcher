@@ -47,11 +47,13 @@ path = "plugins/demo_plugin"
     // 绑定 mock 配置文件路径初始化
     let pm = PluginManager::init_with_host(&configs, 0, Some(mock_config.clone()));
 
-    // 1. 空输入测试: 返回管理向导 (install, uninstall)
+    // 1. 空输入测试: 返回四大管理向导 (install, enable, disable, uninstall)
     let empty_items = pm.query("pm", "");
-    assert_eq!(empty_items.len(), 2);
+    assert_eq!(empty_items.len(), 4);
     let ids: Vec<String> = empty_items.iter().map(|i| i.id.clone()).collect();
     assert!(ids.contains(&"guide-install".to_string()));
+    assert!(ids.contains(&"guide-enable".to_string()));
+    assert!(ids.contains(&"guide-disable".to_string()));
     assert!(ids.contains(&"guide-uninstall".to_string()));
 
     // 2. 测试 install 解析 GitHub index.js 地址
@@ -91,6 +93,17 @@ path = "plugins/demo_plugin"
     assert!(!updated_toml.contains("[plugins.calc_mock]"), "卸载后配置文件中不应再包含该插件段");
     assert!(updated_toml.contains("[plugins.demo_plugin]"), "未卸载的插件仍应保留");
 
+    // 7. 测试 disable 与 enable
+    let dis_payload = r#"{"action":"disable","pluginId":"demo_plugin","pluginName":"演示插件"}"#;
+    pm.select("pm", "disable-demo_plugin", dis_payload);
+    let disabled_toml = fs::read_to_string(&mock_config).unwrap();
+    assert!(disabled_toml.contains("enabled = false"));
+
+    let en_payload = r#"{"action":"enable","pluginId":"demo_plugin","pluginName":"演示插件"}"#;
+    pm.select("pm", "enable-demo_plugin", en_payload);
+    let enabled_toml = fs::read_to_string(&mock_config).unwrap();
+    assert!(enabled_toml.contains("enabled = true"));
+
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -116,8 +129,8 @@ export const metadata = {
   }
 };
 
-export function on_setup(context) {
-  context.cache_icon("./weather_icon.png");
+export function on_setup() {
+  launcher.cache_icon("./weather_icon.png");
 }
 
 export function on_query(input) { return []; }

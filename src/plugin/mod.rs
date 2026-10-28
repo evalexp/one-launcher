@@ -386,18 +386,13 @@ impl PluginManager {
                     self_obj.set("cache_icon", cache_fn).unwrap();
                 }
 
-                // launcher 保持为纯净的共享 API 网关，不携带插件私有 config
+                // launcher 保持为纯净的共享 API 网关，不携带插件私有 config；插件自身私有环境仅挂载 self
                 let _ = ctx.globals().set("launcher", launcher);
                 let _ = ctx.globals().set("self", self_obj.clone());
-                let _ = ctx.globals().set("context", self_obj.clone());
-                let _ = ctx.globals().set("plugin", self_obj.clone());
-                let _ = ctx.globals().set("context", self_obj.clone());
-                let _ = ctx.globals().set("plugin", self_obj.clone());
 
-                // 6. 执行插件 on_setup() 初始化生命周期
+                // 6. 执行插件 on_setup() 初始化生命周期 (严格无参调用)
                 if let Ok(setup_fn) = module.get::<_, Function>("on_setup") {
-                    // 支持无参调用，或将 self_obj 作为首参传入
-                    if let Err(e) = setup_fn.call::<_, ()>((self_obj,)) {
+                    if let Err(e) = setup_fn.call::<_, ()>(()) {
                         warn!("插件 [{}] 执行 on_setup 失败: {}", plugin_id, e);
                     } else {
                         info!("插件 [{}] 初始化就绪", plugin_id);

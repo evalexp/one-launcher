@@ -110,11 +110,13 @@ export function on_setup() {
 
 ---
 
-### 3.3 插件隔离上下文 (`self` / `context`)
+### 3.3 插件隔离上下文 (`self`)
 
 每个插件均运行于宿主为其创建的**独立隔离 QuickJS Context** 中，彻底避免多插件全局作用域与变量污染。
 
-插件可直接通过 `self`（或同义别名 `context`）访问专属实例上下文信息与私有配置：
+插件环境中全局变量仅提供 `launcher`（共享核心 API 网关）与 `self`（插件自有上下文实例）。生命周期函数中只有 `on_query(input)` 与 `on_select(item)` 接收参数，`on_setup()` 严格无参。
+
+插件通过 `self` 访问专属实例上下文信息与私有配置：
 
 | 属性 / 方法 | 返回类型 | 说明 |
 | :--- | :--- | :--- |
@@ -475,6 +477,10 @@ console.error("致命错误记录");
    - 执行注册表或系统级修改时，使用 `batch_exec` 并配置 `auto_sudo: true`。
    - 检查 `res.cancelled`：如果用户在 UAC 提权界面中点击“否”，优雅提示用户“操作已取消”，不得崩溃。
    - 任何涉及 I/O 与网络的 `on_select` 逻辑必须用 `try { ... } catch (err) { ... }` 完整包裹。
+6. [ ] **全局作用域与生命周期参数规范**：
+   - 全局变量严格限制为共享网关 `launcher` 与自有上下文 `self`；
+   - `on_setup()` 必须为无参定义；
+   - 仅 `on_query(input)` 与 `on_select(item)` 允许接收参数。
 
 ---
 
