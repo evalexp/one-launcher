@@ -4,6 +4,7 @@ pub mod host_env;
 pub mod host_fs;
 pub mod host_http;
 pub mod host_process;
+pub mod host_progress;
 pub mod host_vm;
 pub mod model;
 
@@ -136,6 +137,11 @@ pub fn setup_shared_launcher_apis<'js>(
     // 注册应用生命周期与配置管理能力 (launcher.app)
     let _ = host_app::register_app(ctx, &launcher, hwnd, config_path);
 
+    // 注册进度展示能力 (launcher.progress 与 launcher.app.progress)
+    if let Ok(app_obj) = launcher.get::<_, Object>("app") {
+        let _ = host_progress::register_progress(ctx, &launcher, &app_obj);
+    }
+
     // 注册虚拟机与隔离上下文能力 (launcher.create_context, launcher.eval_module)
     let _ = host_vm::register_vm(ctx, &launcher);
 
@@ -235,6 +241,9 @@ impl PluginManager {
         config_path_opt: Option<PathBuf>,
     ) -> Self {
         let config_path = config_path_opt.unwrap_or_else(crate::config::ConfigManager::detect_config_path);
+        if let Ok(app_cfg) = crate::config::ConfigManager::read_config_from_file(&config_path) {
+            host_http::set_global_proxy(app_cfg.network.get_effective_proxy().map(str::to_string));
+        }
         let rt = Runtime::new().expect("初始化 QuickJS Runtime 失败");
         let mut loaded = Vec::new();
 

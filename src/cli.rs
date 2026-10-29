@@ -316,6 +316,9 @@ pub fn run_cli(cli: &CliArgs) -> i32 {
         .clone()
         .unwrap_or_else(ConfigManager::detect_config_path);
     let mut cfg = ConfigManager::read_config_from_file(&config_path).unwrap_or_default();
+    crate::plugin::host_http::set_global_proxy(
+        cfg.network.get_effective_proxy().map(str::to_string),
+    );
 
     // 2. 配置日志级别与输出目标
     if let Some(ref lvl) = cli.log_level {

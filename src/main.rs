@@ -70,6 +70,9 @@ fn main() {
     };
 
     let mut cfg = config_mgr.get();
+    one_launcher::plugin::host_http::set_global_proxy(
+        cfg.network.get_effective_proxy().map(str::to_string),
+    );
 
     // 命令行参数覆盖
     if cli_args.debug {

@@ -1,7 +1,9 @@
 pub mod model;
 pub mod template;
 
-pub use model::{AppearanceConfig, AppConfig, AppsConfig, GeneralConfig, LogConfig, PluginConfig};
+pub use model::{
+    AppearanceConfig, AppConfig, AppsConfig, GeneralConfig, LogConfig, NetworkConfig, PluginConfig,
+};
 
 use parking_lot::RwLock;
 use std::env;

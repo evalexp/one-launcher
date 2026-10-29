@@ -1,8 +1,29 @@
 use crate::plugin::host_fs::extract_bytes;
+use parking_lot::RwLock;
 use rquickjs::function::Opt;
 use rquickjs::{ArrayBuffer, Ctx, Function, Object, Value};
 use std::collections::HashMap;
 use std::time::Duration;
+
+static GLOBAL_PROXY: RwLock<Option<String>> = RwLock::new(None);
+
+/// 设置全局 HTTP 代理地址
+pub fn set_global_proxy(proxy: Option<String>) {
+    let mut lock = GLOBAL_PROXY.write();
+    *lock = proxy.and_then(|p| {
+        let p_trim = p.trim().to_string();
+        if p_trim.is_empty() {
+            None
+        } else {
+            Some(p_trim)
+        }
+    });
+}
+
+/// 获取当前生效的全局 HTTP 代理地址
+pub fn get_global_proxy() -> Option<String> {
+    GLOBAL_PROXY.read().clone()
+}
 
 /// 发起 HTTP 同步请求（基于第三方 reqwest 客户端库）
 pub fn perform_http_request(
@@ -12,8 +33,19 @@ pub fn perform_http_request(
     body: &[u8],
     timeout_ms: u32,
 ) -> Result<(u32, String, HashMap<String, String>, Vec<u8>), String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms as u64))
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms as u64));
+
+    if let Some(proxy_url) = get_global_proxy() {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("配置系统代理失败 ({}): {}", proxy_url, e))?;
+        client_builder = client_builder.proxy(proxy);
+    } else {
+        // 未配置代理时强制直连，不受外部不可控环境变量干扰
+        client_builder = client_builder.no_proxy();
+    }
+
+    let client = client_builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 

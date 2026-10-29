@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub appearance: AppearanceConfig,
     pub apps: AppsConfig,
     pub log: LogConfig,
+    pub network: NetworkConfig,
     pub plugins: HashMap<String, PluginConfig>,
 }
 
@@ -20,6 +21,7 @@ impl Default for AppConfig {
             appearance: AppearanceConfig::default(),
             apps: AppsConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: HashMap::new(),
         }
     }
@@ -151,6 +153,42 @@ impl Default for LogConfig {
         Self {
             level: "info".to_string(),
             path: "fs:logs/one-launcher.log".to_string(),
+        }
+    }
+}
+
+/// 网络与代理配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    /// 代理服务地址 (支持 http://, https://, socks5:// 协议)
+    /// 留空或未启用时不通过代理（直接连接）
+    pub proxy: String,
+    /// 是否启用代理。默认若 proxy 非空则启用；若显式设为 false 则即便 proxy 有值也强制直连
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            proxy: String::new(),
+            enabled: None,
+        }
+    }
+}
+
+impl NetworkConfig {
+    /// 获取当前生效的代理地址（若禁用或为空则返回 None）
+    pub fn get_effective_proxy(&self) -> Option<&str> {
+        if self.enabled == Some(false) {
+            return None;
+        }
+        let p = self.proxy.trim();
+        if p.is_empty() {
+            None
+        } else {
+            Some(p)
         }
     }
 }

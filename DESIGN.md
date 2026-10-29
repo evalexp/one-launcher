@@ -47,6 +47,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 │   ├─ launcher.shell: exec, batch_exec, spawn, open, UAC 提权/auto_sudo │
 │   ├─ launcher.env: 进程环境变量读写与代理                              │
 │   ├─ launcher.app: quit, reload, edit_config, message_box 原生弹窗     │
+│   ├─ launcher.progress: create, show, update, close 原生双缓冲进度条   │
 │   ├─ launcher.clipboard: 系统剪贴板读写                                │
 │   └─ launcher.cache_icon: 图标提取与注册入池                           │
 │ - 插件私有上下文 (self):                                               │
@@ -78,12 +79,16 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
    - `on_setup()`: **无参设计**，插件首次加载时执行一次。图标直接通过 `launcher.cache_icon(...)` 或 `self.cache_icon(...)` 注册。
    - `on_query(input)`: 同步极速过滤，必须返回 `SearchResultItem` 数组，每个条目必需包含 `badge` 标识。
    - `on_select(item)`: 确认触发动作，执行网络、文件或系统管理。
-3. **HTTP 网络请求能力**：
+3. **HTTP 网络请求能力与系统级代理控制**：
    - 采用成熟三方库 `reqwest`（阻塞式 Blocking 客户端），原生支持 HTTPS、系统根证书信任链、智能重定向与代理穿透，提供 `launcher.http.get/post/request` 以及 `launcher.fetch` 全局别名。
-4. **UAC 提权与批处理执行**：
+   - 代理统一在系统配置层（`config.toml` -> `[network]`）集中控制（支持 HTTP/HTTPS/SOCKS5），未启用或留空时严格强制直连（`.no_proxy()`）。插件纯净发起请求，无需在业务代码中关心代理。
+4. **Win32 原生进度条系统 (`src/ui/progress.rs` & `src/plugin/host_progress.rs`)**：
+   - 独立 UI 消息循环线程驱动，暗黑风格 `#1E1E1E` + `#0078D4` 强调色与 DWM 圆角窗口。
+   - GDI 内存双缓冲防闪烁绘制，支持实时百分比、状态文本、可拖拽移动与 ESC 快速退出，插件管理器等长耗时操作已全流程接入。
+5. **UAC 提权与批处理执行**：
    - `launcher.shell.exec` 支持 `sudo: true` 单次弹出 UAC 提权窗口；支持 `auto_sudo: true` 在非提权失败后自动提权重试。
    - `launcher.shell.batch_exec` 将多个指令（如批量注册表写入）打包合并为单次提权批处理会话，杜绝多次 UAC 弹窗打扰。
-5. **日志前缀自动识别**：
+6. **日志前缀自动识别**：
    - 通过线程局部 RAII 上下文 `enter_plugin_context`，插件脚本内的 `console.log` 及宿主代理日志自动附带当前插件名标签（如 `-[Clash 控制器] ...`）。
 
 ### 3.2 命令行调试与隔离诊断系统 (`src/cli/`)
@@ -140,6 +145,13 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
     - 在线安装 (`install`)：资源全量离线下载 -> 目录创建 -> 配置热注册 -> 宿主实时重载。
     - 热启用 (`enable`) / 热禁用 (`disable`)：全盘扫描磁盘插件与配置段（精准跳过注释），动态切换状态并热重载。
     - 完整卸载 (`uninstall`)：列出所有已安装与声明插件，同步抹除配置文件与本地磁盘目录。
+- [x] **系统级代理配置与网络透明接管**：
+  - 新增 `[network]` 配置段，支持 HTTP/HTTPS/SOCKS5 代理（引入 `socks` 协议栈支持）。
+  - 代理配置统一在系统底层集中控制，插件纯净发起请求；未配置或显式禁用时严格强制直连（`.no_proxy()`）。
+- [x] **Win32 原生双缓冲进度条系统 (`launcher.progress`)**：
+  - 独立 UI 消息循环线程驱动，采用现代暗黑风格与 DWM 圆角窗口，双缓冲 GDI 贴图绝不闪烁。
+  - 提供实例级（`create`）与全局级（`show`/`update`/`close`）接口，支持实时百分比、状态文本、鼠标按住拖拽与 ESC 键快速关闭。
+  - 插件管理器在线安装、依赖下载与完整卸载全流程接入，告别盲等。
 - [x] **配置清理与简化**：
   - 移除无用外观配置，精简 `AppearanceConfig`。
   - 插件 `PluginConfig.path` 设为可选，默认解析回退到 `plugins/<plugin-id>`。

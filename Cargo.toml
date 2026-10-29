@@ -28,7 +28,7 @@ rquickjs = "0.14.0"
 libloading = "0.9.0"
 
 # 网络请求
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "default-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "default-tls", "socks"] }
 
 # Windows 原生 API 绑定
 [target.'cfg(windows)'.dependencies.windows]

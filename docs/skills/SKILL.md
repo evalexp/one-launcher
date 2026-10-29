@@ -289,6 +289,9 @@ const postRes = launcher.http.post("http://127.0.0.1:9090/configs?force=true", "
 });
 ```
 
+> [!NOTE]
+> 网络代理统一在宿主配置层（`config.toml` 中的 `[network]` 节点）集中接管控制。插件发起网络请求时无需关心是否走代理，宿主会自动根据系统配置适配直连或指定代理（支持 HTTP/HTTPS/SOCKS5）。
+
 ---
 
 ### 4.4 命令与外部进程 (`launcher.shell` & `launcher.process`)
@@ -437,7 +440,31 @@ const result = launcher.eval_module(moduleCodeString);
 
 ---
 
-### 4.8 剪贴板操作 (`launcher.clipboard`)
+### 4.8 原生进度条展示 (`launcher.progress`)
+
+用于长时间耗时任务（如插件管理器下载插件、依赖资源拉取、耗时批处理等）的原生进度展示，采用 Win32 原生 GDI 双缓冲渲染与独立 UI 消息线程驱动，平滑不卡顿：
+
+```javascript
+// 方式一：面向对象实例控制 (推荐)
+const pb = launcher.progress.create("插件安装", "正在连接下载源...", 10);
+pb.update(45, "正在下载依赖资源...");
+pb.update(100, "安装完成！");
+pb.close();
+
+// 方式二：过程式全局单例调用
+launcher.progress.show("任务标题", "正在处理...", 0);
+launcher.progress.update(50, "处理中...");
+launcher.progress.close();
+
+// 快捷别名 (同时挂载于 launcher 与 launcher.app)
+launcher.show_progress("标题", "描述", 20);
+launcher.update_progress(80, "即将完成");
+launcher.close_progress();
+```
+
+---
+
+### 4.9 剪贴板操作 (`launcher.clipboard`)
 
 ```javascript
 launcher.clipboard.write_text("需要拷贝的字符串");

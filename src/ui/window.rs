@@ -269,6 +269,9 @@ impl LauncherWindowState {
     pub fn reload_config(&mut self) {
         match self.config_mgr.reload() {
             Ok(new_cfg) => {
+                crate::plugin::host_http::set_global_proxy(
+                    new_cfg.network.get_effective_proxy().map(str::to_string),
+                );
                 if let Err(err) = register_global_hotkey(self.hwnd, &new_cfg.general.hotkey) {
                     warn!("重新注册热键提示: {}", err);
                 }

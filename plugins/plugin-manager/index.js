@@ -596,11 +596,16 @@ function executeInstall(parsed) {
   const targetDir = (pluginsBase + "/" + parsed.pluginId).replace(/\\/g, "/");
 
   console.info(`准备安装插件 [${parsed.pluginId}] 至: ${targetDir}`);
+  const pb = (typeof launcher !== "undefined" && launcher.progress && typeof launcher.progress.create === "function")
+    ? launcher.progress.create("安装插件", `正在下载 [${parsed.pluginId}] 脚本...`, 15)
+    : null;
+
   launcher.fs.mkdir(targetDir);
 
   // 1. 下载 index.js
   const downloadRes = downloadIndexJs(parsed);
   if (!downloadRes || !downloadRes.code) {
+    if (pb) pb.close();
     const errMsg = `下载插件脚本失败: ${parsed.rawUrl}`;
     console.error(errMsg);
     if (launcher.message_box) {
@@ -610,6 +615,7 @@ function executeInstall(parsed) {
   }
 
   const { code: indexCode, baseUrl } = downloadRes;
+  if (pb) pb.update(35, "正在评估模块并解析依赖...");
 
   // 2. 利用完全隔离的 QuickJS 虚拟机上下文安全评估 ES 模块
   let meta = null;
@@ -661,6 +667,7 @@ function executeInstall(parsed) {
       meta = modRes.metadata || {};
     }
   } catch (err) {
+    if (pb) pb.close();
     const errMsg = "解析插件脚本模块失败: " + err;
     console.error(errMsg);
     if (launcher.message_box) {
@@ -680,9 +687,12 @@ function executeInstall(parsed) {
   const resourcesToDownload = collectResourcePaths(meta, interceptedIcons);
   console.info(`目标插件依赖资源列表: ${JSON.stringify(resourcesToDownload)}`);
 
-  for (const relPath of resourcesToDownload) {
+  for (let i = 0; i < resourcesToDownload.length; i++) {
+    const relPath = resourcesToDownload[i];
     const filename = getBasename(relPath);
     const fileUrl = resolveUrl(baseUrl, relPath);
+    const stepPct = 40 + Math.floor(((i + 1) / resourcesToDownload.length) * 45);
+    if (pb) pb.update(stepPct, `正在下载依赖 (${i + 1}/${resourcesToDownload.length}): ${filename}...`);
     console.info(`正在下载插件依赖资源 [${filename}]: ${fileUrl}`);
 
     const fileRes = launcher.http.get(fileUrl, { timeout_ms: 30000 });
@@ -694,6 +704,8 @@ function executeInstall(parsed) {
     }
   }
 
+  if (pb) pb.update(90, "正在写入入口脚本与配置注册...");
+
   // 4. 保存 index.js 脚本至插件目录
   launcher.fs.write(targetDir + "/index.js", indexCode);
   console.info(`插件入口脚本已写入: ${targetDir}/index.js`);
@@ -704,6 +716,11 @@ function executeInstall(parsed) {
   // 6. 触发主程序热重载
   if (launcher.app && launcher.app.reload) {
     launcher.app.reload();
+  }
+
+  if (pb) {
+    pb.update(100, "插件安装完成！");
+    pb.close();
   }
 
   // 7. 弹窗提醒安装成功
@@ -724,9 +741,13 @@ function executeInstall(parsed) {
  */
 function executeUninstall(pluginId, pluginPath) {
   console.info(`准备卸载插件: [${pluginId}] 路径: ${pluginPath}`);
+  const pb = (typeof launcher !== "undefined" && launcher.progress && typeof launcher.progress.create === "function")
+    ? launcher.progress.create("卸载插件", `正在清理配置段 [plugins.${pluginId}]...`, 25)
+    : null;
 
   // 1. 从 config.toml 中彻底逐行移除配置
   removePluginFromConfig(pluginId);
+  if (pb) pb.update(60, "正在移除本地插件文件...");
 
   // 2. 删除磁盘对应文件夹
   const pluginsBase = getPluginsBaseDir();
@@ -740,9 +761,16 @@ function executeUninstall(pluginId, pluginPath) {
     launcher.fs.remove(candidate2);
   }
 
+  if (pb) pb.update(90, "正在重载主程序...");
+
   // 3. 触发配置热重载
   if (launcher.app && launcher.app.reload) {
     launcher.app.reload();
+  }
+
+  if (pb) {
+    pb.update(100, "卸载完成！");
+    pb.close();
   }
 
   // 4. 弹窗提醒卸载成功

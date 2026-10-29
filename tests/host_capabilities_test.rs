@@ -314,3 +314,59 @@ fn test_launcher_vm_and_isolated_context() {
         assert_eq!(intercepted, vec!["./custom_icon.png"]);
     });
 }
+
+#[test]
+fn test_plugin_host_progress() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::full(&rt).unwrap();
+
+    ctx.with(|ctx| {
+        let launcher = Object::new(ctx.clone()).unwrap();
+        let app_obj = Object::new(ctx.clone()).unwrap();
+        one_launcher::plugin::host_progress::register_progress(&ctx, &launcher, &app_obj).unwrap();
+        launcher.set("app", app_obj).unwrap();
+        ctx.globals().set("launcher", launcher).unwrap();
+
+        // 1. 测试 launcher.progress.create, update, close
+        ctx.eval::<(), _>(r#"
+            const pb = launcher.progress.create("测试进度", "正在连接...", 10);
+            pb.update(50, "已完成一半");
+            pb.update(100, "全部完成");
+            pb.close();
+        "#).unwrap();
+
+        // 2. 测试 launcher.show_progress, update_progress, close_progress
+        ctx.eval::<(), _>(r#"
+            launcher.show_progress("全局测试", "开始", 0);
+            launcher.update_progress(80, "即将完成");
+            launcher.close_progress();
+        "#).unwrap();
+    });
+}
+
+#[test]
+fn test_network_proxy_config() {
+    use one_launcher::config::NetworkConfig;
+
+    let mut net = NetworkConfig::default();
+    assert_eq!(net.get_effective_proxy(), None);
+
+    net.proxy = "http://127.0.0.1:7890".to_string();
+    assert_eq!(net.get_effective_proxy(), Some("http://127.0.0.1:7890"));
+
+    net.enabled = Some(false);
+    assert_eq!(net.get_effective_proxy(), None);
+
+    net.enabled = Some(true);
+    assert_eq!(net.get_effective_proxy(), Some("http://127.0.0.1:7890"));
+
+    // 同步到 host_http
+    one_launcher::plugin::host_http::set_global_proxy(net.get_effective_proxy().map(str::to_string));
+    assert_eq!(
+        one_launcher::plugin::host_http::get_global_proxy(),
+        Some("http://127.0.0.1:7890".to_string())
+    );
+
+    one_launcher::plugin::host_http::set_global_proxy(None);
+    assert_eq!(one_launcher::plugin::host_http::get_global_proxy(), None);
+}
