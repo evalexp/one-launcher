@@ -92,7 +92,7 @@ export const metadata = {
 插件首次加载或重新载入时触发一次。
 
 > [!NOTE]
-> `on_setup` 为**无参调用**。自定义图标可通过全局共享网关 `launcher.cache_icon(...)` 或插件自有上下文 `self.cache_icon(...)` 进行缓存注册。
+> `on_setup` 为**无参调用**。自定义图标直接通过全局共享网关 `launcher.cache_icon(...)` 进行缓存注册。
 
 ```javascript
 let myIconId = "gear";
@@ -125,8 +125,7 @@ export function on_setup() {
 | `self.get_id()` / `self.id` | `string` | 插件在宿主系统中的唯一标识 ID（如 `"clash"`） |
 | `self.get_name()` / `self.name` | `string` | 插件显示名称 |
 | `self.get_prefix()` / `self.prefix` | `string` | 插件独占触发前缀（如 `"clash:"`） |
-| `self.get_dir()` / `self.dir` | `string` | 插件本地所在目录绝对/相对路径 |
-| `self.cache_icon(path_or_bytes)` | `string` | 本地或二进制图标注册（自动基于当前插件目录解析相对路径） |
+| `self.get_dir()` / `self.dir` / `self.path` | `string` | 插件本地所在目录绝对/相对路径 |
 
 ```javascript
 // 在插件任何函数中均可直接安全访问自己的配置
@@ -205,6 +204,21 @@ export function on_select(item) {
 ## 4. 宿主能力矩阵 (`launcher.*`)
 
 宿主在 QuickJS 顶层预先注入了全局共享 API 网关 `launcher`。`launcher` 保持为纯净的共享 API 接入点，不携带任何插件私有配置（插件配置统一通过 `self.get_config()` 获取）。
+
+### 4.0 能力总览与速查表
+
+| 能力模块 | 挂载路径 | 核心方法 / 特性 | 主要应用场景 |
+| :--- | :--- | :--- | :--- |
+| **图标缓存** | `launcher.cache_icon` | `cache_icon(preset \| path \| buffer)` | 预设矢量图标、本地图片注册与 ArrayBuffer 图像入池 |
+| **文件系统** | `launcher.fs` | `exists`, `read`, `read_text`, `write`, `append`, `copy`, `move`, `remove`, `mkdir`, `list`, `stat` | Win32 原生高性能文件与目录读写、二进制流及元信息查询 |
+| **网络通信** | `launcher.http` / 全局 `fetch` | `get`, `post`, `request` / `fetch()` | 基于成熟 reqwest 引擎的高可靠 HTTPS 请求，**底层透明应用系统代理** |
+| **进程与提权**| `launcher.shell` / `launcher.process` | `exec`, `batch_exec`, `spawn`, `open` | 控制台静默调用、`auto_sudo` 智能单次提权与批处理、外部程序/网址打开 |
+| **环境变量** | `launcher.env` | `get`, `set`, `has`, `remove`, `all` | 系统与进程级环境变量读写探测 |
+| **宿主与弹窗**| `launcher.app` / `launcher.message_box` | `quit`, `reload`, `edit_config`, `message_box`, `alert` | 原生 MessageBox 弹窗、主配置热重载与生命周期管理 |
+| **隔离沙箱** | `launcher.create_context` / `eval_module` | `create_context()`, `eval_module(code)` | 创建独立 QuickJS 隔离虚拟机，支持安全动态模块评估与依赖预解析 |
+| **原生进度条**| `launcher.progress` | `create()`, `show()`, `update()`, `close()` | 独立 UI 消息线程与 GDI 双缓冲原生 Win32 进度条（支持面向对象与单例） |
+| **系统剪贴板**| `launcher.clipboard` | `write_text(str)`, `write(str)` | 系统剪贴板内容写入与同步 |
+| **控制台日志**| `console` | `log`, `info`, `warn`, `error` | 自动绑定插件名称前缀（如 `-[插件名]`），并入 Rust `tracing` 引擎 |
 
 ### 4.1 图标注册 (`launcher.cache_icon`)
 
@@ -473,7 +487,7 @@ launcher.clipboard.write("别名方法");
 
 ---
 
-### 4.9 控制台日志 (`console`)
+### 4.10 控制台日志 (`console`)
 
 QuickJS 中的 `console` 已桥接至 Rust 原生 `tracing` 日志引擎，支持日志级别输出：
 
@@ -508,6 +522,10 @@ console.error("致命错误记录");
    - 全局变量严格限制为共享网关 `launcher` 与自有上下文 `self`；
    - `on_setup()` 必须为无参定义；
    - 仅 `on_query(input)` 与 `on_select(item)` 允许接收参数。
+7. [ ] **长耗时操作原生进度条反馈**：
+   - 涉及网络批量下载、依赖拉取或耗时大于 1 秒的任务，建议调用 `launcher.progress.create(...)` 唤起原生独立线程进度条，保持用户体验平滑，并在任务结束或异常时务必调用 `close()`。
+8. [ ] **系统网络代理透明解耦**：
+   - 插件网络请求直接调用 `launcher.http` 或全局 `fetch`，严禁在插件业务代码中硬编码或手动判断代理规则；宿主在底层根据 `config.toml` 的 `[network]` 配置统一完成透明路由。
 
 ---
 

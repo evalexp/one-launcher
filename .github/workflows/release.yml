@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Build Release Binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package Release Artifacts
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "latest" }
+          $binPath = "target/x86_64-pc-windows-msvc/release/one-launcher.exe"
+
+          # 1. 独立单文件二进制程序
+          Copy-Item -Path $binPath -Destination "one-launcher-${tag}-windows-x64.exe" -Force
+
+          # 2. 标准发布包 (OneLauncher-${tag}-windows-x64.zip) - 纯净版（不自带预装插件）
+          $distStd = "dist_std"
+          New-Item -ItemType Directory -Path "$distStd/OneLauncher/plugins" -Force | Out-Null
+          Copy-Item -Path $binPath -Destination "$distStd/OneLauncher/one-launcher.exe" -Force
+          Copy-Item -Path "assets/default_config.toml" -Destination "$distStd/OneLauncher/config.toml" -Force
+          if (Test-Path "README.md") {
+            Copy-Item -Path "README.md" -Destination "$distStd/OneLauncher/README.md" -Force
+          }
+          Compress-Archive -Path "$distStd/OneLauncher" -DestinationPath "OneLauncher-${tag}-windows-x64.zip" -Force
+          Remove-Item -Path $distStd -Recurse -Force
+
+          # 3. 携带插件管理器发布包 (OneLauncher-${tag}-with-plugin-manager-windows-x64.zip)
+          $distPm = "dist_pm"
+          New-Item -ItemType Directory -Path "$distPm/OneLauncher/plugins" -Force | Out-Null
+          Copy-Item -Path $binPath -Destination "$distPm/OneLauncher/one-launcher.exe" -Force
+          Copy-Item -Path "plugins/plugin-manager" -Destination "$distPm/OneLauncher/plugins/plugin-manager" -Recurse -Force
+
+          # 注入并开启 plugin-manager 插件配置
+          $cfg = Get-Content -Raw "assets/default_config.toml"
+          $cfg += "`n`n[plugins.plugin-manager]`nenabled = true`n"
+          Set-Content -Path "$distPm/OneLauncher/config.toml" -Value $cfg -Encoding utf8
+
+          if (Test-Path "README.md") {
+            Copy-Item -Path "README.md" -Destination "$distPm/OneLauncher/README.md" -Force
+          }
+          Compress-Archive -Path "$distPm/OneLauncher" -DestinationPath "OneLauncher-${tag}-with-plugin-manager-windows-x64.zip" -Force
+          Remove-Item -Path $distPm -Recurse -Force
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            OneLauncher-*-windows-x64.zip
+            OneLauncher-*-with-plugin-manager-windows-x64.zip
+            one-launcher-*-windows-x64.exe
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

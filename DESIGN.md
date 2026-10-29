@@ -1,6 +1,6 @@
-# OneLauncher 架构设计与开发进度文档 (DESIGN.md)
+# OneLauncher 架构与系统设计规范 (DESIGN.md)
 
-本文档系统性记录 **OneLauncher** 的核心架构、设计规范、模块实现与完整开发进度。
+本文档系统性阐述 **OneLauncher** 的核心架构、子系统设计、模块交互契约与分发规范。
 
 ---
 
@@ -43,7 +43,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 │ - 每插件独立 Context 隔离: 专属 globalThis，杜绝变量泄漏与跨插件污染   │
 │ - 共享 Rust Core API 网关 (launcher.*，无状态纯 API):                  │
 │   ├─ launcher.fs: 原生 Win32 同步/二进制文件系统 API                   │
-│   ├─ launcher.http & fetch: 基于第三方成熟库 reqwest 的完整网络客户端   │
+│   ├─ launcher.http & fetch: 基于成熟库 reqwest 的完整网络客户端         │
 │   ├─ launcher.shell: exec, batch_exec, spawn, open, UAC 提权/auto_sudo │
 │   ├─ launcher.env: 进程环境变量读写与代理                              │
 │   ├─ launcher.app: quit, reload, edit_config, message_box 原生弹窗     │
@@ -52,8 +52,7 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 │   └─ launcher.cache_icon: 图标提取与注册入池                           │
 │ - 插件私有上下文 (self):                                               │
 │   ├─ self.get_config() / self.config: 插件私有合并配置                 │
-│   ├─ self.id, self.name, self.prefix, self.dir                         │
-│   └─ self.cache_icon: 相对路径自动解析                                 │
+│   └─ self.id, self.name, self.prefix, self.dir, self.path              │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -73,35 +72,38 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 ### 3.1 插件系统与上下文隔离架构 (`src/plugin/`)
 1. **多 Context 完全隔离与共享 API 分离**：
    - **共享 API 网关 (`launcher`)**：`launcher` 作为纯净的程序能力接口接入点（API Gateway），绑定至共享 Rust 核心，提供文件操作、网络请求、进程与提权命令、剪贴板、系统管理及图标缓存能力。`launcher` 不包含任何插件私有状态或私有 `config`。
-   - **插件私有上下文 (`self`)**：每个插件在初始化阶段都会在 QuickJS Runtime 内获得专属独立的 `Context`。在此 Context 中注入专属于该插件的 `self` 对象，提供 `self.get_config()`、`self.config`、`self.id`、`self.name`、`self.prefix`、`self.dir`。全局变量严格限定为 `launcher` 与 `self`（以及宿主 `console`），各插件的全局变量与模块状态 100% 物理隔离，杜绝全局作用域污染。
+   - **插件私有上下文 (`self`)**：每个插件在初始化阶段在 QuickJS Runtime 内获得专属独立的 `Context`。在此 Context 中注入专属于该插件的 `self` 对象，提供 `self.get_config()`、`self.config`、`self.id`、`self.name`、`self.prefix`、`self.dir` 与 `self.path`。全局变量严格限定为 `launcher` 与 `self`（以及宿主 `console`），各插件的全局变量与模块状态物理隔离。
 2. **生命周期规范**：
-   - `metadata`: 声明插件名、前缀（`prefix`）、默认配置（`default_config`）与 FFI 声明。
-   - `on_setup()`: **无参设计**，插件首次加载时执行一次。图标直接通过 `launcher.cache_icon(...)` 或 `self.cache_icon(...)` 注册。
-   - `on_query(input)`: 同步极速过滤，必须返回 `SearchResultItem` 数组，每个条目必需包含 `badge` 标识。
+   - `metadata`: 声明插件名、前缀（`prefix`）、默认配置（`default_config`）与动态库 FFI 声明。
+   - `on_setup()`: **无参调用**，插件首次加载时执行一次。图标通过 `launcher.cache_icon(...)` 注册。
+   - `on_query(input)`: 同步响应，剥离前缀匹配过滤，返回包含 `id`, `title`, `subtitle`, `icon`, `badge`, `payload` 的 `SearchResultItem` 数组。
    - `on_select(item)`: 确认触发动作，执行网络、文件或系统管理。
 3. **HTTP 网络请求能力与系统级代理控制**：
-   - 采用成熟三方库 `reqwest`（阻塞式 Blocking 客户端），原生支持 HTTPS、系统根证书信任链、智能重定向与代理穿透，提供 `launcher.http.get/post/request` 以及 `launcher.fetch` 全局别名。
-   - 代理统一在系统配置层（`config.toml` -> `[network]`）集中控制（支持 HTTP/HTTPS/SOCKS5），未启用或留空时严格强制直连（`.no_proxy()`）。插件纯净发起请求，无需在业务代码中关心代理。
+   - 基于 `reqwest` 客户端，支持完整 HTTPS、系统根证书信任链、智能重定向与代理穿透，提供 `launcher.http.get/post/request` 以及 `launcher.fetch` 全局别名。
+   - 代理统一在系统配置层（`config.toml` -> `[network]`）集中控制（支持 HTTP/HTTPS/SOCKS5），未启用或留空时强制直连。插件发起请求无需关心代理，底层自动完成透明路由。
 4. **Win32 原生进度条系统 (`src/ui/progress.rs` & `src/plugin/host_progress.rs`)**：
    - 独立 UI 消息循环线程驱动，暗黑风格 `#1E1E1E` + `#0078D4` 强调色与 DWM 圆角窗口。
-   - GDI 内存双缓冲防闪烁绘制，支持实时百分比、状态文本、可拖拽移动与 ESC 快速退出，插件管理器等长耗时操作已全流程接入。
+   - GDI 内存双缓冲防闪烁绘制，支持实时百分比、状态文本、可拖拽移动与 ESC 快速退出，提供面向对象实例（`launcher.progress.create`）与全局单例接口。
 5. **UAC 提权与批处理执行**：
    - `launcher.shell.exec` 支持 `sudo: true` 单次弹出 UAC 提权窗口；支持 `auto_sudo: true` 在非提权失败后自动提权重试。
-   - `launcher.shell.batch_exec` 将多个指令（如批量注册表写入）打包合并为单次提权批处理会话，杜绝多次 UAC 弹窗打扰。
+   - `launcher.shell.batch_exec` 将多个指令（如批量注册表写入）打包合并为单次提权批处理会话，全局仅触发一次 UAC 授权。
 6. **日志前缀自动识别**：
    - 通过线程局部 RAII 上下文 `enter_plugin_context`，插件脚本内的 `console.log` 及宿主代理日志自动附带当前插件名标签（如 `-[Clash 控制器] ...`）。
+7. **隔离沙箱与动态模块评估**：
+   - 宿主提供 `launcher.create_context()` 创建全新独立 QuickJS 隔离虚拟机。
+   - 宿主提供 `launcher.eval_module()`，以原生 ES Module 规范直接评估第三方脚本，安全提取 `metadata` 与导出列表。
 
 ### 3.2 命令行调试与隔离诊断系统 (`src/cli/`)
 专用于终端调试与验证插件逻辑，无需打开 GUI 界面：
 - **参数支持**：`-plugin`, `-input`, `-select`, `-debug`, `-log-out`, `-log-level`, `-format`, `-config`, `-help`。
-- **无窗体保证**：完全绕过 Win32 窗口注册与绘制流程，以纯控制台方式执行。
+- **无窗体保证**：绕过 Win32 窗口注册与绘制流程，以纯控制台方式执行。
 - **控制台依附**：在 Windows GUI 子系统模式下，安全检测标准输出类型，未重定向时通过 `AttachConsole(ATTACH_PARENT_PROCESS)` 依附父进程控制台，不破坏重定向管道。
 - **结果隔离输出**：使用清晰的横幅块（`=== ONELAUNCHER RESULTS ===`）分隔业务结果与追踪日志，并提供易读纯文本与结构化 JSON 两种格式。
 
 ### 3.3 配置管理 (`src/config/`)
 - 基于 `config.toml`，支持托盘一键热重载与 `sys: reload` 插件重载。
 - **路径缺省回退**：`[plugins.<id>]` 下的 `path` 字段为可选配置，默认自动解析至 `"plugins/<id>"`，支持极简注册。
-- **精简原则**：清理了无用的外观无效配置（`theme`、`font_size`、`backdrop_effect`），严格保持配置项与运行时逻辑的一一映射。
+- **严格映射原则**：严格保持配置项与运行时逻辑的一一映射，支持常规配置、外观尺寸、日志等级、网络代理与插件池。
 
 ### 3.4 原生 Win32 GDI 渲染与图标缓存 (`src/ui/`)
 - 无重型 GPU/Web 渲染管线，采用 Win32 原生 GDI 双缓冲（CompatibleDC + CompatibleBitmap）消除画面闪烁。
@@ -123,48 +125,21 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 
 ---
 
-## 5. 当前开发进度与里程碑总结
+## 5. 构建与分发交付体系
 
-- [x] **基础设施重构与体积优化**：
-  - 核心架构稳定，单文件 Release 编译体积控制在 ~3.8 MB（包含 QuickJS 引擎与 reqwest HTTPS 协议栈）。
-  - 内存占用控制在 10MB 左右。
-- [x] **插件 HTTP 引擎第三方库重构**：
-  - 引入成熟三方网络库 `reqwest`，替换原本基于 Windows 原生 WinHttp 的底层实现，提供高可靠的 HTTPS 连接、证书验证与重定向支持。
-- [x] **插件上下文隔离与 Rust Core API 共享重构**：
-  - `launcher` 保持为纯净的全局共享 API 接入点，完全剥离私有 `config`。
-  - 插件分配独立隔离的 QuickJS Context，互相之间全局变量与状态彻底隔离。
-  - 引入 `self` 插件私有上下文对象，通过 `self.get_config()` 获取自有配置。全局变量严格限定为 `launcher`、`self` 与 `console`。
-  - `on_setup` 改为严格无参设计，仅 `on_query(input)` 与 `on_select(item)` 接收参数，`cache_icon` 整合至 `launcher` 与 `self`。
-- [x] **完全隔离虚拟机与 ES 模块安全评估能力**：
-  - 宿主提供 `launcher.create_context()`，按需生成独立 QuickJS 运行时与沙盒上下文。
-  - 宿主提供 `launcher.eval_module()`，支持以原生 ES Module 规范直接评估第三方脚本，安全提取 `metadata` 与导出列表，无需脆弱的字符串正则转换。
-- [x] **插件管理器全功能重写与多源 URL Resolver**：
-  - 支持多源代码托管平台直链解析（GitHub 自动映射至 raw.githubusercontent.com、Gitee、GitLab 以及任意通用 HTTP/HTTPS 链接）。
-  - 自动化依赖收集：自动扫描 `metadata.dynamic_library`、`metadata.native` 原生动态链接库、`metadata.icon` / `metadata.assets` 静态资源，并在沙盒环境中预执行 `on_setup` 拦截动态注册图标。
-  - 插件生命周期管理闭环：
-    - 在线安装 (`install`)：资源全量离线下载 -> 目录创建 -> 配置热注册 -> 宿主实时重载。
-    - 热启用 (`enable`) / 热禁用 (`disable`)：全盘扫描磁盘插件与配置段（精准跳过注释），动态切换状态并热重载。
-    - 完整卸载 (`uninstall`)：列出所有已安装与声明插件，同步抹除配置文件与本地磁盘目录。
-- [x] **系统级代理配置与网络透明接管**：
-  - 新增 `[network]` 配置段，支持 HTTP/HTTPS/SOCKS5 代理（引入 `socks` 协议栈支持）。
-  - 代理配置统一在系统底层集中控制，插件纯净发起请求；未配置或显式禁用时严格强制直连（`.no_proxy()`）。
-- [x] **Win32 原生双缓冲进度条系统 (`launcher.progress`)**：
-  - 独立 UI 消息循环线程驱动，采用现代暗黑风格与 DWM 圆角窗口，双缓冲 GDI 贴图绝不闪烁。
-  - 提供实例级（`create`）与全局级（`show`/`update`/`close`）接口，支持实时百分比、状态文本、鼠标按住拖拽与 ESC 键快速关闭。
-  - 插件管理器在线安装、依赖下载与完整卸载全流程接入，告别盲等。
-- [x] **配置清理与简化**：
-  - 移除无用外观配置，精简 `AppearanceConfig`。
-  - 插件 `PluginConfig.path` 设为可选，默认解析回退到 `plugins/<plugin-id>`。
-- [x] **输入防抖与空前缀响应修复**：
-  - 解决 `sys:`、`clash:` 等仅敲击前缀或带空格时无候选返回的问题。
-  - 调整为空输入时立即返回全量动作列表。
-- [x] **命令行隔离调试工具**：
-  - 实现纯终端无窗口运行模式，支持单插件隔离加载、模拟查询、条目选中执行。
-  - 增加结果分界横幅与 JSON 格式化输出。
-  - 增加插件日志线程局部命名标签输出（`-[<plugin_name>]`）。
-- [x] **规范与文档标准化**：
-  - 统一建立 `docs/skills/SKILL.md`，规范化生命周期、能力矩阵、自查清单与调试指南。
-  - 移除冗余的 `plugin_development_guide.md`，文档唯一维护。
-- [x] **质量与自动化测试**：
-  - 涵盖配置解析、热键、应用索引模糊匹配、QuickJS 插件生命周期与 Context 隔离、各官方插件业务逻辑、CLI 隔离执行、宿主文件/HTTP能力、独立虚拟机与隔离上下文、插件管理器多平台 URL 解析与 native 依赖下载。
-  - 全套 14 组测试套件 20 个用例 100% 通过，0 编译警告。
+### 5.1 构建架构
+- **目标平台**：Windows x64 (`x86_64-pc-windows-msvc`)。
+- **CI 流水线**：基于 GitHub Actions (`.github/workflows/release.yml`)，严格配置仅在 Release Tag (`push.tags: ['v*']`) 触发自动编译与发布。
+
+### 5.2 分发包体系
+发布流程并行产出两个发行包与一份独立可执行文件：
+
+1. **标准发布版 (`OneLauncher-${tag}-windows-x64.zip`)**：
+   - 面向纯粹启动器需求的用户，纯净轻量。
+   - 包含主程序 `one-launcher.exe`、默认纯净 `config.toml` 与使用说明，不携带任何预装插件。
+2. **插件管理器发布版 (`OneLauncher-${tag}-with-plugin-manager-windows-x64.zip`)**：
+   - 内置 `plugins/plugin-manager` 插件目录。
+   - 预配置默认 `config.toml` 中开启 `[plugins.plugin-manager]` (`enabled = true`)。
+   - 用户解压即具备在线安装与管理插件能力。
+3. **单文件直接下载 (`one-launcher-${tag}-windows-x64.exe`)**：
+   - 包含版本标签的独立 Release 可执行程序，便于单文件快捷更新或部署。

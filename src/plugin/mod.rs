@@ -391,10 +391,6 @@ impl PluginManager {
                 self_obj.set("dir", pdir_str.clone()).unwrap();
                 self_obj.set("path", pdir_str).unwrap();
 
-                if let Ok(cache_fn) = launcher.get::<_, Function>("cache_icon") {
-                    self_obj.set("cache_icon", cache_fn).unwrap();
-                }
-
                 // launcher 保持为纯净的共享 API 网关，不携带插件私有 config；插件自身私有环境仅挂载 self
                 let _ = ctx.globals().set("launcher", launcher);
                 let _ = ctx.globals().set("self", self_obj.clone());
