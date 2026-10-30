@@ -8,6 +8,14 @@ use one_launcher::ui::run_launcher;
 use tracing::{error, info};
 
 fn main() {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Diagnostics::Debug::{
+            SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX,
+        };
+        let _ = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+    }
+
     let cli_args = CliArgs::parse();
 
     #[cfg(windows)]

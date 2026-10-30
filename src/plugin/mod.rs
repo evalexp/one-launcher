@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use tracing::{error, info, warn};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY, SW_SHOWNORMAL};
 
 thread_local! {
     static CURRENT_PLUGIN_NAME: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
@@ -575,6 +575,7 @@ pub fn open_system_path(path: &str) {
         return;
     }
     unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
         let op = HSTRING::from("open");
         let target = HSTRING::from(path);
         ShellExecuteW(
@@ -583,7 +584,7 @@ pub fn open_system_path(path: &str) {
             PCWSTR(target.as_ptr()),
             PCWSTR::null(),
             PCWSTR::null(),
-            SW_SHOW,
+            SW_SHOWNORMAL,
         );
     }
 }

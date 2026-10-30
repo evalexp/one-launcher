@@ -1,6 +1,6 @@
 [package]
 name = "one-launcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Evalexp"]
 description = "A blazingly fast, lightweight launcher for Windows with Everything integration"
@@ -50,6 +50,7 @@ features = [
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
     "Win32_Globalization",
+    "Win32_System_Diagnostics_Debug",
 ]
 
 [profile.release]

@@ -110,6 +110,16 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
 - 采用深色极简风格设计（深灰背景 `#1E1E1E`、选中高亮 `#2D2D30`、柔和边框 `#3E3E42`）。
 - 图标池支持内置矢量预设（`file`, `folder`, `error`, `success`, `warn`, `info`, `gear`, `calc`, `terminal`, `key`, `shield`）与插件本地图片动态转存。
 
+### 3.5 应用程序检索与脱壳启动体系 (`src/indexer/`)
+- **多源索引**：扫描系统与用户开始菜单（`.lnk`、`.exe`、`.url`）以及通过 `shell:AppsFolder` 提取已安装 UWP/MSIX 应用，支持拼音全拼与首字母模糊匹配。
+- **脱壳非子进程启动与前台焦点交接机制**：
+  - 启动优先通过 Windows 桌面外壳 Explorer COM 接口（`IShellDispatch2`），由 `explorer.exe` 创建进程，新进程父进程为 `explorer.exe`。
+  - 将目标程序所在父目录配置为当前工作目录（CWD）。
+  - **前台焦点交接**：在唤起前调用 `AllowSetForegroundWindow(ASFW_ANY)` 并指定 `SW_SHOWNORMAL` 显示状态。
+- **容错防护与静默兜底**：
+  - 主程序全局配置 `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX)`。
+  - 在 COM 唤起不可用时降级调用 `ShellExecuteExW` 并配置 `SEE_MASK_FLAG_NO_UI` 掩码。
+
 ---
 
 ## 4. 插件生态就绪清单
@@ -143,3 +153,22 @@ OneLauncher 是一款面向 Windows 平台打造的原生轻量级快速启动�
    - 用户解压即具备在线安装与管理插件能力。
 3. **单文件直接下载 (`one-launcher-${tag}-windows-x64.exe`)**：
    - 包含版本标签的独立 Release 可执行程序，便于单文件快捷更新或部署。
+
+---
+
+## 6. 版本更新记录
+
+### v0.1.1-pre
+- **应用程序启动架构升级**：
+  - 接入 Windows 桌面外壳 Explorer COM 接口（`IShellDispatch2`），由 `explorer.exe` 代理创建应用程序进程。
+  - 启动目标程序时注入父目录作为当前工作目录（CWD）。
+  - 保留 `ShellExecuteExW`（携带 `SEE_MASK_FLAG_NO_UI`）作为降级兜底路径。
+- **系统错误模式与焦点管理**：
+  - 主程序全局启用 `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX)`。
+  - 在唤起程序与调用 `open_system_path` 时调用 `AllowSetForegroundWindow(ASFW_ANY)` 并指定 `SW_SHOWNORMAL` 状态。
+- **依赖特性配置**：
+  - `Cargo.toml` 中 `windows` 依赖引入 `Win32_System_Diagnostics_Debug` 特性。
+
+### v0.1.0-pre
+- 初始架构设计与双发布构建流水线建立。
+- 极速计算器、Clash 控制器、系统管理、TOTP 与插件管理器就绪。
